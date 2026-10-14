@@ -12,10 +12,13 @@ win:
   target:
     - nsis
     - portable
-  artifactName: ${productName}-${version}-${arch}.${ext}
 nsis:
+  artifactName: ${name}-${version}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: false
+# The installer and the portable app are both .exe files, so they need distinct names.
+portable:
+  artifactName: ${name}-${version}-portable.${ext}
 # koffi ships prebuilt N-API binaries, so no native rebuild (or build tools) is needed.
 npmRebuild: false

@@ -36,6 +36,20 @@ Build a Windows installer and a portable exe into `dist/`:
 npm run dist:win
 ```
 
+This produces `desktop-icons-sorter-<version>-setup.exe` (installer) and `desktop-icons-sorter-<version>-portable.exe`.
+
+## Releasing
+
+1. Bump `version` in `package.json` (for example with `npm version 0.2.0 --no-git-tag-version`) and merge it to `main`.
+2. Tag that commit and push the tag:
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+The **Release** workflow then builds both executables on Windows and publishes them, with generated release notes, as a GitHub release. It fails if the tag doesn't match the `package.json` version. The executables aren't code-signed, so Windows SmartScreen will warn on first run.
+
 ## Development
 
 | Command             | What it does                                  |
