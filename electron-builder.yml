@@ -1,0 +1,21 @@
+appId: com.shadowhussein.desktopiconssorter
+productName: Desktop Icons Sorter
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - node_modules/koffi/**
+win:
+  target:
+    - nsis
+    - portable
+  artifactName: ${productName}-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: false
+# koffi ships prebuilt N-API binaries, so no native rebuild (or build tools) is needed.
+npmRebuild: false
