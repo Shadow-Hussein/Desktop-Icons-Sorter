@@ -9,6 +9,10 @@ const IGNORED_NAMES = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
 
 const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
 
+export function isShortcut(fileName: string): boolean {
+  return HIDDEN_EXTENSIONS.has(extname(fileName).toLowerCase())
+}
+
 export function displayNameFor(fileName: string): string {
   const ext = extname(fileName)
   return HIDDEN_EXTENSIONS.has(ext.toLowerCase()) ? fileName.slice(0, -ext.length) : fileName
@@ -71,6 +75,7 @@ export async function listItems(folder: string, sortBy: SortBy): Promise<PanelIt
             displayName: displayNameFor(e.name),
             path,
             isDirectory: st.isDirectory(),
+            isShortcut: !st.isDirectory() && isShortcut(e.name),
             modifiedMs: st.mtimeMs
           }
         } catch {

@@ -62,6 +62,7 @@ describe('sortItems', () => {
     displayName: displayNameFor(fileName),
     path: fileName,
     isDirectory,
+    isShortcut: false,
     modifiedMs
   })
   const items = [item('z.txt', 1), item('a.lnk', 3), item('m.exe', 2), item('dir', 0, true)]
@@ -154,5 +155,22 @@ describe('renameItem', () => {
     touch(join(root, 'b.txt'))
     await expect(renameItem(join(root, 'a.txt'), 'bad:name')).rejects.toThrow(/not a valid/)
     await expect(renameItem(join(root, 'a.txt'), 'b.txt')).rejects.toThrow(/already exists/)
+  })
+})
+
+describe('isShortcut', () => {
+  it('flags .lnk, .url and .pif items only', async () => {
+    touch(join(root, 'Steam.lnk'))
+    touch(join(root, 'Game.URL'))
+    touch(join(root, 'tool.exe'))
+    mkdirSync(join(root, 'Folder.lnk')) // a folder that merely looks like a shortcut
+    const items = await listItems(root, 'name')
+    const flags = Object.fromEntries(items.map((i) => [i.fileName, i.isShortcut]))
+    expect(flags).toEqual({
+      'Steam.lnk': true,
+      'Game.URL': true,
+      'tool.exe': false,
+      'Folder.lnk': false
+    })
   })
 })

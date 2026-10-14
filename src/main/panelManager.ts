@@ -23,6 +23,7 @@ import { attachToDesktop, needsReattach, sendToBottom } from './desktopLayer'
 import { isInside, listItems, moveInto, renameItem, samePath } from './folderService'
 import { clampToWorkAreas, resizeBounds, snapToArea } from './geometry'
 import { getIconDataUrl } from './icons'
+import { getShortcutOverlayDataUrl } from './shortcutOverlay'
 import { ConfigStore, createPanel, folderNameFromTitle } from './store'
 import { createTrayIcon } from './trayIcon'
 import { FolderWatcher } from './watcher'
@@ -297,11 +298,20 @@ export class PanelManager {
     }
   }
 
+  /** Icon size in device pixels for a panel (icon size setting × display scale). */
+  private iconPixels(p: PanelConfig): number {
+    return Math.round(ICON_PIXELS[p.iconSize] * screen.getPrimaryDisplay().scaleFactor)
+  }
+
   async getIcon(panelId: string, path: string): Promise<string | null> {
     const p = this.store.getPanel(panelId)
     if (!p || !this.isManagedPath(path)) return null
-    const scale = screen.getPrimaryDisplay().scaleFactor
-    return getIconDataUrl(path, Math.round(ICON_PIXELS[p.iconSize] * scale))
+    return getIconDataUrl(path, this.iconPixels(p))
+  }
+
+  async getShortcutOverlay(panelId: string): Promise<string | null> {
+    const p = this.store.getPanel(panelId)
+    return p ? getShortcutOverlayDataUrl(this.iconPixels(p)) : null
   }
 
   /** Paths inside any panel's folder are ones the renderer may act on. */

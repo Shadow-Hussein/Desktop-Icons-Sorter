@@ -175,8 +175,16 @@ body.view-panel {
 }
 
 .item-icon {
+  position: relative;
   display: grid;
   place-items: center;
+}
+
+/* Full-size transparent icon with the arrow in its corner, like Explorer's. */
+.item-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .item-icon img {

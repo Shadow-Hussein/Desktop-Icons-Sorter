@@ -9,10 +9,24 @@ interface Props {
   textColor: string
 }
 
+/** The shortcut-arrow overlay for this icon size; fetched once per size. */
+function useShortcutOverlay(size: IconSize): string | null {
+  const [overlay, setOverlay] = useState<{ size: IconSize; url: string | null } | null>(null)
+  useEffect(() => {
+    let alive = true
+    void window.sorter.getShortcutOverlay().then((url) => alive && setOverlay({ size, url }))
+    return () => {
+      alive = false
+    }
+  }, [size])
+  return overlay?.size === size ? overlay.url : null
+}
+
 export function IconGrid({ items, iconSize, textColor }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [renaming, setRenaming] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
+  const overlay = useShortcutOverlay(iconSize)
 
   useEffect(() => window.sorter.onBeginItemRename(setRenaming), [])
 
@@ -58,6 +72,7 @@ export function IconGrid({ items, iconSize, textColor }: Props) {
           item={item}
           iconPx={px}
           iconSize={iconSize}
+          overlay={item.isShortcut ? overlay : null}
           width={tile}
           textColor={textColor}
           selected={selected.has(item.path)}

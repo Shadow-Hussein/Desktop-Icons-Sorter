@@ -5,6 +5,8 @@ interface Props {
   item: PanelItem
   iconPx: number
   iconSize: IconSize
+  /** Shortcut-arrow overlay drawn over the icon, as Explorer does for .lnk/.url. */
+  overlay: string | null
   width: number
   textColor: string
   selected: boolean
@@ -29,7 +31,7 @@ function useIcon(path: string, modifiedMs: number, size: IconSize): string | nul
 }
 
 export function IconItem(props: Props) {
-  const { item, iconPx, iconSize, width, textColor, selected, renaming } = props
+  const { item, iconPx, iconSize, overlay, width, textColor, selected, renaming } = props
   const icon = useIcon(item.path, item.modifiedMs, iconSize)
   const done = useRef(false)
 
@@ -70,6 +72,16 @@ export function IconItem(props: Props) {
           <img src={icon} width={iconPx} height={iconPx} alt="" draggable={false} />
         ) : (
           <div className="icon-placeholder" />
+        )}
+        {icon && overlay && (
+          <img
+            className="item-overlay"
+            src={overlay}
+            width={iconPx}
+            height={iconPx}
+            alt=""
+            draggable={false}
+          />
         )}
       </div>
       {renaming ? (

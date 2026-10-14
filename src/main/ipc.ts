@@ -40,6 +40,7 @@ export function registerIpc(pm: PanelManager): void {
 
   handle(IPC.listItems, (id) => pm.listItems(id))
   handle(IPC.getIcon, (id, path) => pm.getIcon(id, pathArg.parse(path)))
+  handle(IPC.getShortcutOverlay, (id) => pm.getShortcutOverlay(id))
   handle(IPC.openItem, (_id, path) => pm.openItem(pathArg.parse(path)))
   handle(IPC.dropFiles, (id, paths) => pm.dropFiles(id, z.array(pathArg).max(1000).parse(paths)))
   handle(IPC.renameItem, (_id, path, name) =>

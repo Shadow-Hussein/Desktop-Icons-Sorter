@@ -58,6 +58,8 @@ export interface PanelItem {
   displayName: string
   path: string
   isDirectory: boolean
+  /** .lnk/.url/.pif: drawn with the shortcut arrow, like on the desktop. */
+  isShortcut: boolean
   modifiedMs: number
 }
 
@@ -91,6 +93,7 @@ export const IPC = {
   listItems: 'items:list',
   itemsChanged: 'items:changed',
   getIcon: 'items:get-icon',
+  getShortcutOverlay: 'items:get-shortcut-overlay',
   openItem: 'items:open',
   dropFiles: 'items:drop-files',
   renameItem: 'items:rename',
@@ -125,6 +128,8 @@ export interface SorterApi {
   listItems(): Promise<PanelItem[]>
   onItemsChanged(cb: (items: PanelItem[]) => void): () => void
   getIcon(path: string): Promise<string | null>
+  /** The shortcut-arrow overlay at this panel's icon size (null off Windows). */
+  getShortcutOverlay(): Promise<string | null>
   openItem(path: string): Promise<void>
   /** Moves files (from Explorer, the desktop or another panel) into this panel's folder. */
   dropFiles(paths: string[]): Promise<void>

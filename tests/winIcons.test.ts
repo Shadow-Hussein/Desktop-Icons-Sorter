@@ -41,4 +41,15 @@ describe('extractIcon', () => {
     expect(extractIcon(shell32, 100000, 48)).toBeNull()
     expect(extractIcon(join(process.env.SystemRoot ?? 'C:\\Windows', 'win.ini'), 0, 48)).toBeNull()
   })
+
+  it.runIf(isWindows)('extracts the default shortcut arrow overlay from imageres.dll', () => {
+    const imageres = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'imageres.dll')
+    const arrow = extractIcon(imageres, -163, 48)
+    expect(arrow).not.toBeNull()
+    let visible = 0
+    for (let i = 3; i < arrow!.data.length; i += 4) if (arrow!.data[i] > 0) visible++
+    // The arrow only covers a corner of the icon.
+    expect(visible).toBeGreaterThan(0)
+    expect(visible).toBeLessThan((48 * 48) / 2)
+  })
 })

@@ -29,6 +29,7 @@ const api: SorterApi = {
   listItems: () => ipcRenderer.invoke(IPC.listItems),
   onItemsChanged: (cb) => subscribe<[PanelItem[]]>(IPC.itemsChanged, cb),
   getIcon: (path) => ipcRenderer.invoke(IPC.getIcon, path),
+  getShortcutOverlay: () => ipcRenderer.invoke(IPC.getShortcutOverlay),
   openItem: (path) => ipcRenderer.invoke(IPC.openItem, path),
   dropFiles: (paths) => ipcRenderer.invoke(IPC.dropFiles, paths),
   renameItem: (path, newName) => ipcRenderer.invoke(IPC.renameItem, path, newName),
