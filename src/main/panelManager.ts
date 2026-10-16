@@ -83,7 +83,7 @@ export class PanelManager {
 
   stop(): void {
     if (this.reattachTimer) clearInterval(this.reattachTimer)
-    for (const rt of this.panels.values()) void rt.watcher.close()
+    for (const rt of this.panels.values()) rt.watcher.close()
   }
 
   panelIdForSender(webContentsId: number): string | undefined {
@@ -144,8 +144,16 @@ export class PanelManager {
     win.on('blur', () => sendToBottom(win))
     win.on('closed', () => {
       this.senders.delete(wcId)
-      void rt.watcher.close()
+      rt.watcher.close()
       rt.settingsWin?.close()
+    })
+    // All panels share one renderer process (see index.ts), so a crash blanks
+    // every panel. Reload, but at most every 10 s so a crash loop can't spin.
+    let lastCrash = 0
+    win.webContents.on('render-process-gone', (_e, { reason }) => {
+      if (reason === 'clean-exit' || win.isDestroyed() || Date.now() - lastCrash < 10_000) return
+      lastCrash = Date.now()
+      win.reload()
     })
 
     rt.watcher.watch(current.folderPath)

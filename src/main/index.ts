@@ -7,6 +7,13 @@ import { createTray } from './tray'
 
 if (process.platform === 'win32') app.setAppUserModelId('com.shadowhussein.desktopiconssorter')
 
+// Memory: every panel loads the same local page, so they can share one
+// renderer process instead of one each (~30 MB per panel). The UI is mostly
+// static, so software rendering is plenty and the GPU process shrinks from
+// ~95 MB to ~17 MB.
+app.commandLine.appendSwitch('process-per-site')
+app.disableHardwareAcceleration()
+
 // Lets UI tests and side-by-side dev runs use a throwaway profile.
 if (process.env.DESKTOP_SORTER_USER_DATA) {
   app.setPath('userData', process.env.DESKTOP_SORTER_USER_DATA)

@@ -1,6 +1,10 @@
-import chokidar, { type FSWatcher } from 'chokidar'
+import { watch, type FSWatcher } from 'node:fs'
 
-/** Watches one folder (non-recursively) and calls `onChange` debounced. */
+/**
+ * Watches one folder (non-recursively) and calls `onChange` debounced.
+ * Uses Node's own fs.watch (ReadDirectoryChangesW on Windows), which keeps no
+ * per-file state, unlike chokidar.
+ */
 export class FolderWatcher {
   private watcher: FSWatcher | null = null
   private timer: NodeJS.Timeout | null = null
@@ -11,14 +15,18 @@ export class FolderWatcher {
   ) {}
 
   watch(folder: string): void {
-    void this.close()
-    this.watcher = chokidar.watch(folder, {
-      depth: 0,
-      ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 }
+    this.close()
+    try {
+      this.watcher = watch(folder, () => this.schedule())
+    } catch {
+      // Missing or unreadable folder: the panel shows whatever listing finds.
+      return
+    }
+    // The folder was deleted or became inaccessible: refresh, stop watching.
+    this.watcher.on('error', () => {
+      this.closeWatcher()
+      this.schedule()
     })
-    this.watcher.on('all', () => this.schedule())
-    this.watcher.on('error', () => this.schedule())
   }
 
   private schedule(): void {
@@ -29,11 +37,14 @@ export class FolderWatcher {
     }, this.debounceMs)
   }
 
-  async close(): Promise<void> {
+  private closeWatcher(): void {
+    this.watcher?.close()
+    this.watcher = null
+  }
+
+  close(): void {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
-    const w = this.watcher
-    this.watcher = null
-    await w?.close()
+    this.closeWatcher()
   }
 }

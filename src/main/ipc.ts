@@ -1,11 +1,13 @@
 import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
-import { z } from 'zod'
 import { IPC } from '../shared/types'
 import type { PanelManager } from './panelManager'
 import { panelPatchSchema } from './store'
+import { array, oneOf, string } from './validate'
 
-const pathArg = z.string().min(1).max(32_767)
-const edgeArg = z.enum(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'])
+const pathArg = string({ min: 1, max: 32_767 })
+const pathsArg = array(pathArg, { max: 1000 })
+const nameArg = string({ min: 1, max: 255 })
+const edgeArg = oneOf(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'])
 
 /**
  * Registers all IPC handlers. Every handler resolves the panel from the
@@ -42,9 +44,9 @@ export function registerIpc(pm: PanelManager): void {
   handle(IPC.getIcon, (id, path) => pm.getIcon(id, pathArg.parse(path)))
   handle(IPC.getShortcutOverlay, (id) => pm.getShortcutOverlay(id))
   handle(IPC.openItem, (_id, path) => pm.openItem(pathArg.parse(path)))
-  handle(IPC.dropFiles, (id, paths) => pm.dropFiles(id, z.array(pathArg).max(1000).parse(paths)))
+  handle(IPC.dropFiles, (id, paths) => pm.dropFiles(id, pathsArg.parse(paths)))
   handle(IPC.renameItem, (_id, path, name) =>
-    pm.renameItem(pathArg.parse(path), z.string().min(1).max(255).parse(name))
+    pm.renameItem(pathArg.parse(path), nameArg.parse(name))
   )
   on(IPC.itemMenu, (id, path) => pm.showItemMenu(id, pathArg.parse(path)))
   on(IPC.backgroundMenu, (id) => pm.showBackgroundMenu(id))

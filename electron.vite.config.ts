@@ -13,6 +13,8 @@ export default defineConfig({
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
     build: {
+      // Smaller bundle = less for every panel's renderer to parse and keep in memory.
+      minify: true,
       rollupOptions: {
         input: resolve(__dirname, 'src/renderer/index.html')
       }

@@ -1,62 +1,68 @@
 import { mkdirSync, promises as fsp, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import { z } from 'zod'
-import type { AppConfig, Bounds, PanelConfig } from '../shared/types'
+import type { AppConfig, Bounds, PanelConfig, PanelPatch } from '../shared/types'
 import { MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH } from '../shared/types'
+import {
+  array,
+  boolean,
+  number,
+  object,
+  oneOf,
+  strictPartial,
+  string,
+  withDefault
+} from './validate'
 
-const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/)
-const opacity = z.number().min(0).max(1)
+const hexColor = string({ pattern: /^#[0-9a-fA-F]{6}$/ })
+const opacity = number({ min: 0, max: 1 })
 
-export const boundsSchema = z.object({
-  x: z.number().finite(),
-  y: z.number().finite(),
-  width: z.number().finite().min(MIN_PANEL_WIDTH),
-  height: z.number().finite().min(MIN_PANEL_HEIGHT)
+export const boundsSchema = object<Bounds>({
+  x: number(),
+  y: number(),
+  width: number({ min: MIN_PANEL_WIDTH }),
+  height: number({ min: MIN_PANEL_HEIGHT })
 })
 
-const iconSize = z.enum(['small', 'medium', 'large'])
-const sortBy = z.enum(['name', 'type', 'modified'])
-const title = z.string().max(200)
+const iconSize = oneOf(['small', 'medium', 'large'])
+const sortBy = oneOf(['name', 'type', 'modified'])
+const title = string({ max: 200 })
 
-export const panelSchema = z.object({
-  id: z.string().min(1),
+export const panelSchema = object<PanelConfig>({
+  id: string({ min: 1 }),
   title,
   bounds: boundsSchema,
-  collapsed: z.boolean().default(false),
-  bgColor: hexColor.default('#1e1e1e'),
-  bgOpacity: opacity.default(0.45),
-  titleBarColor: hexColor.default('#000000'),
-  titleBarOpacity: opacity.default(0.55),
-  titleTextColor: hexColor.default('#ffffff'),
-  folderPath: z.string().min(1),
-  iconSize: iconSize.default('medium'),
-  sortBy: sortBy.default('name')
+  collapsed: withDefault(boolean(), false),
+  bgColor: withDefault(hexColor, '#1e1e1e'),
+  bgOpacity: withDefault(opacity, 0.45),
+  titleBarColor: withDefault(hexColor, '#000000'),
+  titleBarOpacity: withDefault(opacity, 0.55),
+  titleTextColor: withDefault(hexColor, '#ffffff'),
+  folderPath: string({ min: 1 }),
+  iconSize: withDefault(iconSize, 'medium'),
+  sortBy: withDefault(sortBy, 'name')
 })
 
 /**
  * Fields a renderer may change. Deliberately built without defaults: a
  * partial schema with defaults would fill in (and so reset) unsent fields.
  */
-export const panelPatchSchema = z
-  .object({
-    title,
-    bgColor: hexColor,
-    bgOpacity: opacity,
-    titleBarColor: hexColor,
-    titleBarOpacity: opacity,
-    titleTextColor: hexColor,
-    iconSize,
-    sortBy
-  })
-  .partial()
-  .strict()
+export const panelPatchSchema = strictPartial<PanelPatch>({
+  title,
+  bgColor: hexColor,
+  bgOpacity: opacity,
+  titleBarColor: hexColor,
+  titleBarOpacity: opacity,
+  titleTextColor: hexColor,
+  iconSize,
+  sortBy
+})
 
-export const configSchema = z.object({
-  version: z.literal(1).default(1),
-  panels: z.array(panelSchema).default([]),
-  startWithWindows: z.boolean().default(false),
-  locked: z.boolean().default(false)
+export const configSchema = object<AppConfig>({
+  version: withDefault(oneOf([1]), 1),
+  panels: withDefault(array(panelSchema), []),
+  startWithWindows: withDefault(boolean(), false),
+  locked: withDefault(boolean(), false)
 })
 
 export function defaultConfig(): AppConfig {

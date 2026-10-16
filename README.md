@@ -82,10 +82,11 @@ src/
     panelManager.ts        One frameless transparent window per panel; menus, move/resize, collapse
     desktopLayer.ts        Win32 (via koffi): keeps panels on the desktop layer
     folderService.ts       List, move (collision-safe, cross-drive) and rename items
-    store.ts               Validated (zod), atomic, debounced config.json
+    store.ts               Validated, atomic, debounced config.json
     geometry.ts            Resize, edge snapping, keeping panels on screen
-    icons.ts, watcher.ts   Shell icons, folder watching (chokidar)
+    icons.ts, watcher.ts   Shell icons, folder watching (fs.watch)
     ipc.ts                 IPC handlers; every payload is validated
+    validate.ts            Small schema checks for config and IPC payloads
   preload/index.ts         contextBridge API (renderers are sandboxed)
   renderer/                React UI: panel view and settings window
 tests/                     Unit tests

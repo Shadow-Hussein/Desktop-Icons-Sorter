@@ -3,8 +3,12 @@ import { promises as fsp } from 'node:fs'
 import { resolveIconSource, type IconSourceDeps } from './iconSource'
 import { extractIcon } from './winIcons'
 
-const cache = new Map<string, string>()
-const MAX_CACHE = 2000
+/**
+ * Recently used icons by path and size. Map order doubles as LRU order, and a
+ * changed file replaces its entry, so stale icons never pile up.
+ */
+const cache = new Map<string, { mtime: number; url: string }>()
+const MAX_CACHE = 300
 
 const iconSourceDeps: IconSourceDeps = {
   readShortcutLink: (path) => shell.readShortcutLink(path),
@@ -55,9 +59,15 @@ export async function getIconDataUrl(path: string, pixels: number): Promise<stri
   } catch {
     return null
   }
-  const key = `${path}|${mtime}|${pixels}`
+  const key = `${path}|${pixels}`
   const hit = cache.get(key)
-  if (hit) return hit
+  if (hit) {
+    cache.delete(key)
+    if (hit.mtime === mtime) {
+      cache.set(key, hit)
+      return hit.url
+    }
+  }
 
   let img: NativeImage | null = null
   if (process.platform === 'win32') {
@@ -75,8 +85,8 @@ export async function getIconDataUrl(path: string, pixels: number): Promise<stri
 
   const url = usable(img) ? img.toDataURL() : null
   if (url) {
-    if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value as string)
-    cache.set(key, url)
+    cache.set(key, { mtime, url })
+    if (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value as string)
   }
   return url
 }
