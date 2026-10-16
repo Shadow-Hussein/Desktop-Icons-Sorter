@@ -73,7 +73,14 @@ export function Panel() {
       onDragOver={(e) => {
         if (!hasFiles(e)) return
         e.preventDefault()
-        e.dataTransfer.dropEffect = 'move'
+        // Drags from our own panels (webContents.startDrag) don't allow
+        // 'move', and asking for it cancels the drop. The item is moved
+        // either way; this only picks the cursor.
+        const allowed = e.dataTransfer.effectAllowed
+        e.dataTransfer.dropEffect =
+          allowed === 'all' || allowed === 'uninitialized' || /move/i.test(allowed)
+            ? 'move'
+            : 'copy'
       }}
       onDrop={onDrop}
     >
