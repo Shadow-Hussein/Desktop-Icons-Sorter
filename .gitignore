@@ -6,3 +6,6 @@ dist/
 .vscode/
 .idea/
 *.tsbuildinfo
+
+# graphify: generated knowledge graph (rebuild with `graphify update .`)
+graphify-out/
