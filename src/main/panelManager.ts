@@ -53,6 +53,20 @@ interface PanelRuntime {
   settingsWin: BrowserWindow | null
 }
 
+/**
+ * All windows share one renderer process (see index.ts), so a crash blanks
+ * every panel and the settings window at once. Reload, but at most every
+ * 10 s so a crash loop can't spin.
+ */
+function reloadOnCrash(win: BrowserWindow): void {
+  let lastCrash = 0
+  win.webContents.on('render-process-gone', (_e, { reason }) => {
+    if (reason === 'clean-exit' || win.isDestroyed() || Date.now() - lastCrash < 10_000) return
+    lastCrash = Date.now()
+    win.reload()
+  })
+}
+
 export class PanelManager {
   private readonly panels = new Map<string, PanelRuntime>()
   /** webContents id → panel id, for both panel and settings windows. */
@@ -147,14 +161,7 @@ export class PanelManager {
       rt.watcher.close()
       rt.settingsWin?.close()
     })
-    // All panels share one renderer process (see index.ts), so a crash blanks
-    // every panel. Reload, but at most every 10 s so a crash loop can't spin.
-    let lastCrash = 0
-    win.webContents.on('render-process-gone', (_e, { reason }) => {
-      if (reason === 'clean-exit' || win.isDestroyed() || Date.now() - lastCrash < 10_000) return
-      lastCrash = Date.now()
-      win.reload()
-    })
+    reloadOnCrash(win)
 
     rt.watcher.watch(current.folderPath)
     await this.opts.loadRenderer(win, { view: 'panel', panel: panel.id })
@@ -649,6 +656,7 @@ export class PanelManager {
       this.senders.delete(wcId)
       if (rt.settingsWin === win) rt.settingsWin = null
     })
+    reloadOnCrash(win)
     await this.opts.loadRenderer(win, { view: 'settings', panel: panelId })
   }
 }
