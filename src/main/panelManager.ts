@@ -621,15 +621,12 @@ export class PanelManager {
     }
     const panelBounds = rt.win.getBounds()
     const area = screen.getDisplayMatching(panelBounds).workArea
-    const width = 360
-    const height = 680
-    const x = Math.min(panelBounds.x + panelBounds.width + 12, area.x + area.width - width)
-    const y = Math.max(area.y, Math.min(panelBounds.y, area.y + area.height - height))
     const win = new BrowserWindow({
-      x,
-      y,
-      width,
-      height,
+      // Content size, so the frame doesn't eat into it; tall enough to show
+      // every section (678 px) without scrolling.
+      width: 360,
+      height: 690,
+      useContentSize: true,
       resizable: false,
       minimizable: false,
       maximizable: false,
@@ -646,6 +643,15 @@ export class PanelManager {
       }
     })
     win.setMenu(null)
+    // Next to the panel, with the whole window (frame included) on screen.
+    const { width, height } = win.getBounds()
+    win.setPosition(
+      Math.max(
+        area.x,
+        Math.min(panelBounds.x + panelBounds.width + 12, area.x + area.width - width)
+      ),
+      Math.max(area.y, Math.min(panelBounds.y, area.y + area.height - height))
+    )
     rt.settingsWin = win
     const wcId = win.webContents.id
     this.senders.set(wcId, panelId)
