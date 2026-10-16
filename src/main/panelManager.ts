@@ -155,6 +155,9 @@ export class PanelManager {
       if (!this.hidden) win.showInactive()
       attachToDesktop(win)
     })
+    // A panel that joins the shared renderer process (see index.ts) gets an
+    // opaque white page background, so re-apply transparency on every load.
+    win.webContents.on('did-finish-load', () => win.setBackgroundColor('#00000000'))
     win.on('blur', () => sendToBottom(win))
     win.on('closed', () => {
       this.senders.delete(wcId)
