@@ -2,6 +2,8 @@
 
 Rectangular, customizable panels on the Windows desktop for sorting your icons. It works like Stardock Fences: drop shortcuts into a panel to group them, then collapse the panel when you want a clean desktop.
 
+Free and open source under the [MIT License](LICENSE).
+
 ## Features
 
 - **Panels that live on the desktop.** They sit behind normal windows, stay out of the taskbar and Alt+Tab, and stay visible on "Show desktop" (Win+D).
@@ -97,3 +99,7 @@ Each panel window is made an _owned_ window of `Progman` (the desktop shell wind
 
 - Items on the shared _Public Desktop_ (`C:\Users\Public\Desktop`) need administrator rights to move. The app tells you when a move fails.
 - Renaming a panel does not rename its folder. Use **Panel settings → Folder → Change…** to point a panel at a different folder.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
