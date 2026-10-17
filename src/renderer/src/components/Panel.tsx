@@ -56,10 +56,15 @@ export function Panel() {
 
   if (!state) return null
   const { panel, locked } = state
+  // A collapsed panel only resizes along its title bar.
+  const sideways = panel.collapseDirection === 'left' || panel.collapseDirection === 'right'
+  const collapsedEdges: ResizeEdge[] = sideways ? ['n', 's'] : ['e', 'w']
 
   return (
     <div
-      className={`panel${panel.collapsed ? ' collapsed' : ''}${dropActive ? ' drop-active' : ''}`}
+      className={`panel bar-${panel.collapseDirection}${panel.collapsed ? ' collapsed' : ''}${
+        dropActive ? ' drop-active' : ''
+      }`}
       style={{ background: hexToRgba(panel.bgColor, panel.bgOpacity) }}
       onDragEnter={(e) => {
         if (!hasFiles(e)) return
@@ -89,7 +94,7 @@ export function Panel() {
         <IconGrid items={items} iconSize={panel.iconSize} textColor={panel.titleTextColor} />
       )}
       {!locked &&
-        EDGES.filter((e) => !panel.collapsed || e === 'e' || e === 'w').map((e) => (
+        EDGES.filter((e) => !panel.collapsed || collapsedEdges.includes(e)).map((e) => (
           <ResizeHandle key={e} edge={e} />
         ))}
     </div>

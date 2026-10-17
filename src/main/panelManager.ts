@@ -11,6 +11,7 @@ import { existsSync, promises as fsp } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type {
   Bounds,
+  CollapseDirection,
   IconSize,
   PanelConfig,
   PanelPatch,
@@ -21,7 +22,14 @@ import type {
 import { ICON_PIXELS, IPC, TITLE_BAR_HEIGHT } from '../shared/types'
 import { attachToDesktop, needsReattach, sendToBottom } from './desktopLayer'
 import { isInside, listItems, moveInto, renameItem, samePath } from './folderService'
-import { clampToWorkAreas, resizeBounds, snapToArea } from './geometry'
+import {
+  clampToWorkAreas,
+  collapsedBounds,
+  expandedFromCollapsed,
+  isSideways,
+  resizeBounds,
+  snapToArea
+} from './geometry'
 import { getIconDataUrl } from './icons'
 import { getShortcutOverlayDataUrl } from './shortcutOverlay'
 import { ConfigStore, createPanel, folderNameFromTitle } from './store'
@@ -105,12 +113,31 @@ export class PanelManager {
   }
 
   private windowBounds(p: PanelConfig): Bounds {
-    return p.collapsed ? { ...p.bounds, height: TITLE_BAR_HEIGHT } : p.bounds
+    return p.collapsed ? collapsedBounds(p.bounds, p.collapseDirection, TITLE_BAR_HEIGHT) : p.bounds
+  }
+
+  /**
+   * Windows won't make a transparent window shorter than about 38 px, which is
+   * taller than a collapsed title bar, and rounds sizes at fractional scaling.
+   * When the bar sits at the bottom or right, keep that edge where it belongs
+   * and let the extra size go the other way.
+   */
+  private placeWindow(win: BrowserWindow, target: Bounds, barSide: CollapseDirection | null): void {
+    win.setBounds(target)
+    if (barSide !== 'down' && barSide !== 'right') return
+    const got = win.getBounds()
+    const x = barSide === 'right' ? target.x + target.width - got.width : got.x
+    const y = barSide === 'down' ? target.y + target.height - got.height : got.y
+    if (x !== got.x || y !== got.y) win.setBounds({ ...got, x, y })
+  }
+
+  private applyBounds(win: BrowserWindow, p: PanelConfig): void {
+    this.placeWindow(win, this.windowBounds(p), p.collapsed ? p.collapseDirection : null)
   }
 
   private async openPanel(panel: PanelConfig): Promise<void> {
     const workAreas = screen.getAllDisplays().map((d) => d.workArea)
-    const bounds = clampToWorkAreas(panel.bounds, workAreas)
+    const bounds = clampToWorkAreas(panel.bounds, workAreas, panel.collapseDirection)
     if (bounds !== panel.bounds) this.store.updatePanel(panel.id, (p) => (p.bounds = bounds))
     const current = this.store.getPanel(panel.id)!
 
@@ -139,6 +166,7 @@ export class PanelManager {
         spellcheck: false
       }
     })
+    this.applyBounds(win, current)
     const rt: PanelRuntime = {
       win,
       watcher: new FolderWatcher(() => void this.pushItems(panel.id)),
@@ -173,10 +201,11 @@ export class PanelManager {
   private clampAll(): void {
     const workAreas = screen.getAllDisplays().map((d) => d.workArea)
     for (const p of this.store.get().panels) {
-      const b = clampToWorkAreas(p.bounds, workAreas)
+      const b = clampToWorkAreas(p.bounds, workAreas, p.collapseDirection)
       if (b !== p.bounds) {
         const updated = this.store.updatePanel(p.id, (d) => (d.bounds = b))
-        if (updated) this.panels.get(p.id)?.win.setBounds(this.windowBounds(updated))
+        const rt = this.panels.get(p.id)
+        if (updated && rt) this.applyBounds(rt.win, updated)
       }
     }
   }
@@ -211,6 +240,9 @@ export class PanelManager {
       rt.settingsWin?.setTitle(`Panel settings: ${updated.title}`)
     }
     this.pushState(panelId)
+    if (rt && updated.collapsed && updated.collapseDirection !== before.collapseDirection) {
+      this.applyBounds(rt.win, updated)
+    }
     if (patch.sortBy !== undefined && patch.sortBy !== before.sortBy) void this.pushItems(panelId)
   }
 
@@ -220,19 +252,37 @@ export class PanelManager {
     if (!updated || !rt) return
     // Let the renderer switch layout first so the content never looks squashed.
     this.pushState(panelId)
-    this.animateHeight(rt.win, this.windowBounds(updated).height)
+    this.animateBounds(
+      rt.win,
+      this.windowBounds(updated),
+      updated.collapsed ? updated.collapseDirection : null
+    )
   }
 
-  private animateHeight(win: BrowserWindow, target: number): void {
+  /** Slides the window's edges to `target`; the edge with the title bar stays put. */
+  private animateBounds(
+    win: BrowserWindow,
+    target: Bounds,
+    barSide: CollapseDirection | null
+  ): void {
     const start = win.getBounds()
     const steps = 6
     let i = 0
     const tick = (): void => {
       if (win.isDestroyed()) return
       i++
-      const h = Math.round(start.height + ((target - start.height) * i) / steps)
-      win.setBounds({ ...start, height: i >= steps ? target : h })
-      if (i < steps) setTimeout(tick, 12)
+      const at = (from: number, to: number): number =>
+        i >= steps ? to : Math.round(from + ((to - from) * i) / steps)
+      const next = {
+        x: at(start.x, target.x),
+        y: at(start.y, target.y),
+        width: at(start.width, target.width),
+        height: at(start.height, target.height)
+      }
+      if (i < steps) {
+        win.setBounds(next)
+        setTimeout(tick, 12)
+      } else this.placeWindow(win, next, barSide)
     }
     tick()
   }
@@ -282,9 +332,13 @@ export class PanelManager {
       next = { ...s.startBounds, x: s.startBounds.x + dx, y: s.startBounds.y + dy }
       next = snapToArea(next, screen.getDisplayNearestPoint(c).workArea)
     } else {
-      const collapsed = this.store.getPanel(panelId)?.collapsed
-      next = resizeBounds(s.startBounds, s.edge!, dx, collapsed ? 0 : dy)
-      if (collapsed) next = { ...next, y: s.startBounds.y, height: s.startBounds.height }
+      // A collapsed panel only resizes along its title bar.
+      const p = this.store.getPanel(panelId)
+      const sideways = !!p?.collapsed && isSideways(p.collapseDirection)
+      const flat = !!p?.collapsed && !sideways
+      next = resizeBounds(s.startBounds, s.edge!, sideways ? 0 : dx, flat ? 0 : dy)
+      if (flat) next = { ...next, y: s.startBounds.y, height: s.startBounds.height }
+      if (sideways) next = { ...next, x: s.startBounds.x, width: s.startBounds.width }
     }
     rt.win.setBounds(next)
   }
@@ -295,7 +349,7 @@ export class PanelManager {
     rt.pointer = null
     const b = rt.win.getBounds()
     this.store.updatePanel(panelId, (p) => {
-      p.bounds = p.collapsed ? { ...p.bounds, x: b.x, y: b.y, width: b.width } : b
+      p.bounds = p.collapsed ? expandedFromCollapsed(b, p.bounds, p.collapseDirection) : b
     })
   }
 
@@ -626,9 +680,9 @@ export class PanelManager {
     const area = screen.getDisplayMatching(panelBounds).workArea
     const win = new BrowserWindow({
       // Content size, so the frame doesn't eat into it; tall enough to show
-      // every section (678 px) without scrolling.
+      // every section (708 px) without scrolling.
       width: 360,
-      height: 690,
+      height: 720,
       useContentSize: true,
       resizable: false,
       minimizable: false,

@@ -25,6 +25,11 @@ body.view-panel {
   background: transparent;
 }
 
+body.view-panel #root {
+  display: flex;
+  flex-direction: column;
+}
+
 .panel {
   position: relative;
   height: 100%;
@@ -34,6 +39,26 @@ body.view-panel {
   border: 1px solid rgba(255, 255, 255, 0.14);
   overflow: hidden;
   transition: box-shadow 120ms;
+}
+
+/* Windows can keep a collapsed window larger than the bar; leave the rest
+   transparent, with the bar on the edge it collapses toward. */
+.panel.collapsed {
+  flex: 0 0 var(--titlebar);
+}
+
+.panel.collapsed.bar-down {
+  margin-top: auto;
+}
+
+.panel.collapsed.bar-left,
+.panel.collapsed.bar-right {
+  flex: 1 1 auto;
+  width: var(--titlebar);
+}
+
+.panel.collapsed.bar-right {
+  align-self: flex-end;
 }
 
 .panel.drop-active {
@@ -52,6 +77,58 @@ body.view-panel {
 
 .panel:not(.collapsed) .titlebar {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* The title bar sits on the edge the panel collapses toward. */
+.panel.bar-down {
+  flex-direction: column-reverse;
+  --chevron: 180deg;
+}
+
+.panel.bar-left {
+  flex-direction: row;
+  --chevron: -90deg;
+}
+
+.panel.bar-right {
+  flex-direction: row-reverse;
+  --chevron: 90deg;
+}
+
+.panel.bar-down:not(.collapsed) .titlebar {
+  border-bottom: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.panel.bar-left:not(.collapsed) .titlebar {
+  border-bottom: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.panel.bar-right:not(.collapsed) .titlebar {
+  border-bottom: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Vertical title bar for panels that collapse sideways. */
+.panel.bar-left .titlebar,
+.panel.bar-right .titlebar {
+  height: auto;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.panel.bar-left .title-text,
+.panel.bar-right .title-text {
+  margin: auto 0;
+  writing-mode: vertical-rl;
+}
+
+.panel.bar-left .title-input,
+.panel.bar-right .title-input {
+  min-height: 0;
+  padding: 6px 2px;
+  writing-mode: vertical-rl;
 }
 
 .title-text,
@@ -107,12 +184,14 @@ body.view-panel {
   outline: 2px solid var(--accent);
 }
 
+/* Points at the content when expanded, and a quarter turn back when collapsed. */
 .chevron svg {
+  transform: rotate(var(--chevron, 0deg));
   transition: transform 150ms;
 }
 
 .panel.collapsed .chevron svg {
-  transform: rotate(-90deg);
+  transform: rotate(calc(var(--chevron, 0deg) - 90deg));
 }
 
 .gear {
@@ -127,6 +206,7 @@ body.view-panel {
 .grid {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: grid;
   align-content: start;
   justify-items: center;
@@ -293,6 +373,11 @@ body.view-panel {
   top: 4px;
   bottom: 4px;
 }
+.panel.collapsed .resize-n,
+.panel.collapsed .resize-s {
+  left: 4px;
+  right: 4px;
+}
 
 /* ------------------------------------------------------------- settings */
 
@@ -352,6 +437,30 @@ body.view-settings #root {
 
 .preview-fill {
   height: 100%;
+}
+
+.preview-fill.bar-down,
+.preview-fill.bar-left,
+.preview-fill.bar-right {
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.preview-fill.bar-left {
+  flex-direction: row;
+}
+
+.preview-fill.bar-right {
+  flex-direction: row-reverse;
+}
+
+.preview-fill.bar-left .preview-bar,
+.preview-fill.bar-right .preview-bar {
+  flex: 0 0 26px;
+  height: auto;
+  overflow: hidden;
+  white-space: nowrap;
+  writing-mode: vertical-rl;
 }
 
 .preview-bar {

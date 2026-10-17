@@ -1,4 +1,4 @@
-import type { Bounds, ResizeEdge } from '../shared/types'
+import type { Bounds, CollapseDirection, ResizeEdge } from '../shared/types'
 import { MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH } from '../shared/types'
 
 export const SNAP_DISTANCE = 12
@@ -24,6 +24,52 @@ export function resizeBounds(start: Bounds, edge: ResizeEdge, dx: number, dy: nu
   }
 }
 
+/** Left and right panels have a vertical title bar and collapse sideways. */
+export function isSideways(direction: CollapseDirection): boolean {
+  return direction === 'left' || direction === 'right'
+}
+
+/** The title-bar-only window of a collapsed panel: the strip along the bar's edge. */
+export function collapsedBounds(
+  expanded: Bounds,
+  direction: CollapseDirection,
+  barSize: number
+): Bounds {
+  const { x, y, width, height } = expanded
+  switch (direction) {
+    case 'up':
+      return { x, y, width, height: barSize }
+    case 'down':
+      return { x, y: y + height - barSize, width, height: barSize }
+    case 'left':
+      return { x, y, width: barSize, height }
+    case 'right':
+      return { x: x + width - barSize, y, width: barSize, height }
+  }
+}
+
+/**
+ * Expanded bounds for a collapsed panel whose window was moved or resized to
+ * `win`. Uses the window's edge on the bar's side, since Windows may keep a
+ * collapsed window larger than the bar.
+ */
+export function expandedFromCollapsed(
+  win: Bounds,
+  expanded: Bounds,
+  direction: CollapseDirection
+): Bounds {
+  switch (direction) {
+    case 'up':
+      return { ...expanded, x: win.x, y: win.y, width: win.width }
+    case 'down':
+      return { ...expanded, x: win.x, y: win.y + win.height - expanded.height, width: win.width }
+    case 'left':
+      return { ...expanded, x: win.x, y: win.y, height: win.height }
+    case 'right':
+      return { ...expanded, x: win.x + win.width - expanded.width, y: win.y, height: win.height }
+  }
+}
+
 /** Snap a window being moved to the edges of `area` (e.g. a display work area). */
 export function snapToArea(b: Bounds, area: Bounds, distance = SNAP_DISTANCE): Bounds {
   let { x, y } = b
@@ -45,9 +91,15 @@ function intersectionArea(a: Bounds, b: Bounds): number {
 /**
  * Make sure a panel is reachable: if less than a title-bar-sized strip is on
  * any work area (e.g. a monitor was unplugged), move it onto the work area it
- * overlaps most, or the first one, and shrink it to fit if needed.
+ * overlaps most, or the first one, and shrink it to fit if needed. The strip
+ * runs along the edge the title bar sits on.
  */
-export function clampToWorkAreas(b: Bounds, areas: Bounds[], visibleStrip = 40): Bounds {
+export function clampToWorkAreas(
+  b: Bounds,
+  areas: Bounds[],
+  titleSide: CollapseDirection = 'up',
+  visibleStrip = 40
+): Bounds {
   if (areas.length === 0) return b
   // The area overlapping the panel most, or else the one nearest to it.
   const centerDistance = (a: Bounds): number =>
@@ -56,7 +108,11 @@ export function clampToWorkAreas(b: Bounds, areas: Bounds[], visibleStrip = 40):
     (a1, a2) =>
       intersectionArea(b, a2) - intersectionArea(b, a1) || centerDistance(a1) - centerDistance(a2)
   )[0]
-  const titleStrip: Bounds = { x: b.x, y: b.y, width: b.width, height: Math.min(b.height, 30) }
+  const titleStrip = collapsedBounds(
+    b,
+    titleSide,
+    Math.min(isSideways(titleSide) ? b.width : b.height, 30)
+  )
   const reachable = areas.some((a) => intersectionArea(titleStrip, a) >= visibleStrip * 20)
   if (reachable) return b
 

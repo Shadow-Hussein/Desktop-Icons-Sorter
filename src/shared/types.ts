@@ -1,5 +1,6 @@
 export type IconSize = 'small' | 'medium' | 'large'
 export type SortBy = 'name' | 'type' | 'modified'
+export type CollapseDirection = 'up' | 'down' | 'left' | 'right'
 export type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 export interface Bounds {
@@ -15,6 +16,8 @@ export interface PanelConfig {
   /** Expanded bounds. When collapsed, the window height shrinks to the title bar only. */
   bounds: Bounds
   collapsed: boolean
+  /** Which edge the title bar sits on; the panel collapses toward it. */
+  collapseDirection: CollapseDirection
   /** Background color as #rrggbb. */
   bgColor: string
   /** Background opacity 0–1. Icons and text are not affected. */
@@ -48,6 +51,7 @@ export type PanelPatch = Partial<
     | 'titleTextColor'
     | 'iconSize'
     | 'sortBy'
+    | 'collapseDirection'
   >
 >
 

@@ -14,7 +14,7 @@ Free and open source under the [MIT License](LICENSE).
   - title bar color, transparency and text color
   - color presets
   - icon size (small, medium, large) and sort order (name, type, date modified)
-- **Collapsible.** Click the chevron or double-click an empty part of the title bar to roll the panel up to its title bar.
+- **Collapsible.** Click the chevron or double-click an empty part of the title bar to roll the panel up to its title bar. In panel settings, choose the edge it collapses toward: up, down, left or right. The title bar sits on that edge, so a bottom bar suits panels near the taskbar and a side bar suits panels along a screen edge.
 - **Move and resize** by dragging the title bar or the edges. Panels snap to screen edges, and you can lock all panels from the tray.
 - **Item actions:**
   - double-click to open

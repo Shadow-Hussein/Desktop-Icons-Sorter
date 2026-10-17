@@ -26,6 +26,7 @@ export const boundsSchema = object<Bounds>({
 
 const iconSize = oneOf(['small', 'medium', 'large'])
 const sortBy = oneOf(['name', 'type', 'modified'])
+const collapseDirection = oneOf(['up', 'down', 'left', 'right'])
 const title = string({ max: 200 })
 
 export const panelSchema = object<PanelConfig>({
@@ -33,6 +34,7 @@ export const panelSchema = object<PanelConfig>({
   title,
   bounds: boundsSchema,
   collapsed: withDefault(boolean(), false),
+  collapseDirection: withDefault(collapseDirection, 'up'),
   bgColor: withDefault(hexColor, '#1e1e1e'),
   bgOpacity: withDefault(opacity, 0.45),
   titleBarColor: withDefault(hexColor, '#000000'),
@@ -55,7 +57,8 @@ export const panelPatchSchema = strictPartial<PanelPatch>({
   titleBarOpacity: opacity,
   titleTextColor: hexColor,
   iconSize,
-  sortBy
+  sortBy,
+  collapseDirection
 })
 
 export const configSchema = object<AppConfig>({

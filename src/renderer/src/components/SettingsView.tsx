@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { IconSize, PanelPatch, SortBy } from '../../../shared/types'
+import type { CollapseDirection, IconSize, PanelPatch, SortBy } from '../../../shared/types'
 import { hexToRgba } from '../color'
 import { usePanelState } from '../usePanelState'
 
@@ -45,7 +45,10 @@ export function SettingsView() {
   return (
     <div className="settings">
       <div className="preview" aria-label="Preview">
-        <div className="preview-fill" style={{ background: hexToRgba(p.bgColor, p.bgOpacity) }}>
+        <div
+          className={`preview-fill bar-${p.collapseDirection}`}
+          style={{ background: hexToRgba(p.bgColor, p.bgOpacity) }}
+        >
           <div
             className="preview-bar"
             style={{
@@ -148,6 +151,17 @@ export function SettingsView() {
             checked={p.collapsed}
             onChange={() => void window.sorter.toggleCollapsed()}
           />
+        </Row>
+        <Row label="Collapse toward">
+          <select
+            value={p.collapseDirection}
+            onChange={(e) => update({ collapseDirection: e.target.value as CollapseDirection })}
+          >
+            <option value="up">Up (title bar on top)</option>
+            <option value="down">Down (title bar at bottom)</option>
+            <option value="left">Left (title bar on the left)</option>
+            <option value="right">Right (title bar on the right)</option>
+          </select>
         </Row>
       </section>
 

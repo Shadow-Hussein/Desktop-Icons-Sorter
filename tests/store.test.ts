@@ -21,6 +21,7 @@ describe('parseConfig', () => {
     expect(config.version).toBe(1)
     expect(config.panels[0]).toMatchObject({
       collapsed: false,
+      collapseDirection: 'up',
       bgColor: '#1e1e1e',
       bgOpacity: 0.45,
       iconSize: 'medium',
@@ -59,6 +60,13 @@ describe('panelPatchSchema', () => {
     expect(() => panelPatchSchema.parse({ folderPath: 'C:\\Windows' })).toThrow()
     expect(() => panelPatchSchema.parse({ bgColor: 'red' })).toThrow()
     expect(() => panelPatchSchema.parse({ bgOpacity: 1.5 })).toThrow()
+    expect(() => panelPatchSchema.parse({ collapseDirection: 'sideways' })).toThrow()
+  })
+
+  it('accepts a collapse direction', () => {
+    expect(panelPatchSchema.parse({ collapseDirection: 'down' })).toEqual({
+      collapseDirection: 'down'
+    })
   })
 })
 
