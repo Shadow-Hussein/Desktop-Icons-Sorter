@@ -22,6 +22,7 @@ describe('parseConfig', () => {
     expect(config.panels[0]).toMatchObject({
       collapsed: false,
       collapseDirection: 'up',
+      headerShape: 'default',
       bgColor: '#1e1e1e',
       bgOpacity: 0.45,
       iconSize: 'medium',
@@ -61,12 +62,18 @@ describe('panelPatchSchema', () => {
     expect(() => panelPatchSchema.parse({ bgColor: 'red' })).toThrow()
     expect(() => panelPatchSchema.parse({ bgOpacity: 1.5 })).toThrow()
     expect(() => panelPatchSchema.parse({ collapseDirection: 'sideways' })).toThrow()
+    expect(() => panelPatchSchema.parse({ headerShape: 'round' })).toThrow()
   })
 
   it('accepts a collapse direction', () => {
     expect(panelPatchSchema.parse({ collapseDirection: 'down' })).toEqual({
       collapseDirection: 'down'
     })
+  })
+
+  it('accepts a header shape', () => {
+    expect(panelPatchSchema.parse({ headerShape: 'phone' })).toEqual({ headerShape: 'phone' })
+    expect(panelPatchSchema.parse({ headerShape: 'folder' })).toEqual({ headerShape: 'folder' })
   })
 })
 

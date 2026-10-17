@@ -44,12 +44,14 @@ export function TitleBar({ panel, locked }: Props) {
 
   const isControl = (t: EventTarget): boolean =>
     t instanceof Element && !!t.closest('button, input')
+  // A minimal header has no bar of its own until the panel collapses into it.
+  const bare = panel.headerShape === 'minimal' && !panel.collapsed
 
   return (
     <div
       className="titlebar"
       style={{
-        background: hexToRgba(panel.titleBarColor, panel.titleBarOpacity),
+        background: bare ? 'transparent' : hexToRgba(panel.titleBarColor, panel.titleBarOpacity),
         color: panel.titleTextColor
       }}
       onPointerDown={(e) => {

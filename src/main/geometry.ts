@@ -29,44 +29,55 @@ export function isSideways(direction: CollapseDirection): boolean {
   return direction === 'left' || direction === 'right'
 }
 
-/** The title-bar-only window of a collapsed panel: the strip along the bar's edge. */
+/**
+ * The window of a collapsed panel: the strip along the bar's edge, `barSize`
+ * deep. `length` shortens it along the bar (from the top or left end), as for
+ * a square folder card; null keeps the panel's full length.
+ */
 export function collapsedBounds(
   expanded: Bounds,
   direction: CollapseDirection,
-  barSize: number
+  barSize: number,
+  length: number | null = null
 ): Bounds {
   const { x, y, width, height } = expanded
+  const w = length ?? width
+  const h = length ?? height
   switch (direction) {
     case 'up':
-      return { x, y, width, height: barSize }
+      return { x, y, width: w, height: barSize }
     case 'down':
-      return { x, y: y + height - barSize, width, height: barSize }
+      return { x, y: y + height - barSize, width: w, height: barSize }
     case 'left':
-      return { x, y, width: barSize, height }
+      return { x, y, width: barSize, height: h }
     case 'right':
-      return { x: x + width - barSize, y, width: barSize, height }
+      return { x: x + width - barSize, y, width: barSize, height: h }
   }
 }
 
 /**
  * Expanded bounds for a collapsed panel whose window was moved or resized to
  * `win`. Uses the window's edge on the bar's side, since Windows may keep a
- * collapsed window larger than the bar.
+ * collapsed window larger than the bar. With `fixedLength` (a square folder
+ * card) the window's length along the bar says nothing about the panel's.
  */
 export function expandedFromCollapsed(
   win: Bounds,
   expanded: Bounds,
-  direction: CollapseDirection
+  direction: CollapseDirection,
+  fixedLength = false
 ): Bounds {
+  const width = fixedLength ? expanded.width : win.width
+  const height = fixedLength ? expanded.height : win.height
   switch (direction) {
     case 'up':
-      return { ...expanded, x: win.x, y: win.y, width: win.width }
+      return { ...expanded, x: win.x, y: win.y, width }
     case 'down':
-      return { ...expanded, x: win.x, y: win.y + win.height - expanded.height, width: win.width }
+      return { ...expanded, x: win.x, y: win.y + win.height - expanded.height, width }
     case 'left':
-      return { ...expanded, x: win.x, y: win.y, height: win.height }
+      return { ...expanded, x: win.x, y: win.y, height }
     case 'right':
-      return { ...expanded, x: win.x + win.width - expanded.width, y: win.y, height: win.height }
+      return { ...expanded, x: win.x + win.width - expanded.width, y: win.y, height }
   }
 }
 

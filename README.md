@@ -12,6 +12,7 @@ Free and open source under the [MIT License](LICENSE).
   - title (double-click it to rename)
   - background color and transparency
   - title bar color, transparency and text color
+  - title bar shape: default, phone (a collapsed panel shows a row of its apps you can click to open), phone folder (a collapsed panel is a square with four of its apps), pill, or minimal (no bar until the panel collapses)
   - color presets
   - icon size (small, medium, large) and sort order (name, type, date modified)
 - **Collapsible.** Click the chevron or double-click an empty part of the title bar to roll the panel up to its title bar. In panel settings, choose the edge it collapses toward: up, down, left or right. The title bar sits on that edge, so a bottom bar suits panels near the taskbar and a side bar suits panels along a screen edge.

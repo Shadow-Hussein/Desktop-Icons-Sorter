@@ -1,6 +1,7 @@
 export type IconSize = 'small' | 'medium' | 'large'
 export type SortBy = 'name' | 'type' | 'modified'
 export type CollapseDirection = 'up' | 'down' | 'left' | 'right'
+export type HeaderShape = 'default' | 'phone' | 'folder' | 'pill' | 'minimal'
 export type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 export interface Bounds {
@@ -18,6 +19,11 @@ export interface PanelConfig {
   collapsed: boolean
   /** Which edge the title bar sits on; the panel collapses toward it. */
   collapseDirection: CollapseDirection
+  /**
+   * How the title bar looks. A collapsed phone panel also shows a row of its
+   * apps, and a collapsed folder panel is a square with four of them.
+   */
+  headerShape: HeaderShape
   /** Background color as #rrggbb. */
   bgColor: string
   /** Background opacity 0–1. Icons and text are not affected. */
@@ -52,6 +58,7 @@ export type PanelPatch = Partial<
     | 'iconSize'
     | 'sortBy'
     | 'collapseDirection'
+    | 'headerShape'
   >
 >
 
@@ -73,6 +80,10 @@ export interface PanelState {
 }
 
 export const TITLE_BAR_HEIGHT = 30
+/** The row of apps under a collapsed phone panel's title: a 32 px icon plus padding. */
+export const PHONE_PEEK_SIZE = 48
+/** A collapsed folder panel's square: the title bar over a 2 x 2 grid of 36 px apps. */
+export const FOLDER_CARD_SIZE = 122
 export const MIN_PANEL_WIDTH = 140
 export const MIN_PANEL_HEIGHT = 90
 
@@ -80,6 +91,17 @@ export const ICON_PIXELS: Record<IconSize, number> = {
   small: 32,
   medium: 48,
   large: 64
+}
+
+/** How far a collapsed panel reaches from its title bar's edge. */
+export function collapsedBarSize(shape: HeaderShape): number {
+  if (shape === 'folder') return FOLDER_CARD_SIZE
+  return TITLE_BAR_HEIGHT + (shape === 'phone' ? PHONE_PEEK_SIZE : 0)
+}
+
+/** A collapsed panel's length along its title bar, or null to keep the panel's own. */
+export function collapsedLength(shape: HeaderShape): number | null {
+  return shape === 'folder' ? FOLDER_CARD_SIZE : null
 }
 
 export const IPC = {

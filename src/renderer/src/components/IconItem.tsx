@@ -17,7 +17,7 @@ interface Props {
 }
 
 /** Loads the item's shell icon; refetches when the file or icon size changes. */
-function useIcon(path: string, modifiedMs: number, size: IconSize): string | null {
+export function useIcon(path: string, modifiedMs: number, size: IconSize): string | null {
   const [icon, setIcon] = useState<{ key: string; url: string | null } | null>(null)
   const key = `${path}|${modifiedMs}|${size}`
   useEffect(() => {

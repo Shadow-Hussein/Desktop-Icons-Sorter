@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import type { PanelItem, ResizeEdge } from '../../../shared/types'
+import { collapsedBarSize } from '../../../shared/types'
 import { hexToRgba } from '../color'
 import { usePanelState } from '../usePanelState'
+import { AppPeek } from './AppPeek'
 import { IconGrid } from './IconGrid'
 import { TitleBar } from './TitleBar'
 
@@ -58,14 +60,23 @@ export function Panel() {
   const { panel, locked } = state
   // A collapsed panel only resizes along its title bar.
   const sideways = panel.collapseDirection === 'left' || panel.collapseDirection === 'right'
-  const collapsedEdges: ResizeEdge[] = sideways ? ['n', 's'] : ['e', 'w']
+  const shape = panel.headerShape
+  // A collapsed folder card has a fixed size; others resize along their bar.
+  const collapsedEdges: ResizeEdge[] = shape === 'folder' ? [] : sideways ? ['n', 's'] : ['e', 'w']
+  // A collapsed pill is only its capsule; the panel behind it stays clear.
+  const clear = panel.collapsed && shape === 'pill'
 
   return (
     <div
-      className={`panel bar-${panel.collapseDirection}${panel.collapsed ? ' collapsed' : ''}${
-        dropActive ? ' drop-active' : ''
-      }`}
-      style={{ background: hexToRgba(panel.bgColor, panel.bgOpacity) }}
+      className={`panel bar-${panel.collapseDirection} shape-${shape}${
+        panel.collapsed ? ' collapsed' : ''
+      }${dropActive ? ' drop-active' : ''}`}
+      style={
+        {
+          background: clear ? 'transparent' : hexToRgba(panel.bgColor, panel.bgOpacity),
+          '--collapsed-bar': `${collapsedBarSize(shape)}px`
+        } as CSSProperties
+      }
       onDragEnter={(e) => {
         if (!hasFiles(e)) return
         dragDepth.current++
@@ -92,6 +103,15 @@ export function Panel() {
       <TitleBar panel={panel} locked={locked} />
       {!panel.collapsed && (
         <IconGrid items={items} iconSize={panel.iconSize} textColor={panel.titleTextColor} />
+      )}
+      {panel.collapsed && (shape === 'phone' || shape === 'folder') && (
+        <AppPeek
+          items={items}
+          iconSize={panel.iconSize}
+          textColor={panel.titleTextColor}
+          // A phone row shows enough to fill a wide panel; the rest wrap out of sight.
+          max={shape === 'folder' ? 4 : 16}
+        />
       )}
       {!locked &&
         EDGES.filter((e) => !panel.collapsed || collapsedEdges.includes(e)).map((e) => (

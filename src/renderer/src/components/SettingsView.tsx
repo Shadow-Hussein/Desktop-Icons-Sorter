@@ -1,5 +1,11 @@
 import type { ReactNode } from 'react'
-import type { CollapseDirection, IconSize, PanelPatch, SortBy } from '../../../shared/types'
+import type {
+  CollapseDirection,
+  HeaderShape,
+  IconSize,
+  PanelPatch,
+  SortBy
+} from '../../../shared/types'
 import { hexToRgba } from '../color'
 import { usePanelState } from '../usePanelState'
 
@@ -46,18 +52,29 @@ export function SettingsView() {
     <div className="settings">
       <div className="preview" aria-label="Preview">
         <div
-          className={`preview-fill bar-${p.collapseDirection}`}
+          className={`preview-fill bar-${p.collapseDirection} shape-${p.headerShape}`}
           style={{ background: hexToRgba(p.bgColor, p.bgOpacity) }}
         >
           <div
             className="preview-bar"
             style={{
-              background: hexToRgba(p.titleBarColor, p.titleBarOpacity),
+              background:
+                p.headerShape === 'minimal'
+                  ? 'transparent'
+                  : hexToRgba(p.titleBarColor, p.titleBarOpacity),
               color: p.titleTextColor
             }}
           >
             {p.title || 'Untitled'}
           </div>
+          {(p.headerShape === 'phone' || p.headerShape === 'folder') && (
+            <div className="preview-peek">
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
         </div>
       </div>
 
@@ -107,6 +124,18 @@ export function SettingsView() {
 
       <section>
         <h2>Title bar</h2>
+        <Row label="Shape">
+          <select
+            value={p.headerShape}
+            onChange={(e) => update({ headerShape: e.target.value as HeaderShape })}
+          >
+            <option value="default">Default</option>
+            <option value="phone">Phone (shows apps when collapsed)</option>
+            <option value="folder">Phone folder (2 × 2 square when collapsed)</option>
+            <option value="pill">Pill</option>
+            <option value="minimal">Minimal (no bar until collapsed)</option>
+          </select>
+        </Row>
         <Row label="Color">
           <input
             type="color"

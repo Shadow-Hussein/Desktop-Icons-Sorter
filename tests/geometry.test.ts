@@ -6,7 +6,12 @@ import {
   resizeBounds,
   snapToArea
 } from '../src/main/geometry'
-import { MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH } from '../src/shared/types'
+import {
+  collapsedBarSize,
+  collapsedLength,
+  MIN_PANEL_HEIGHT,
+  MIN_PANEL_WIDTH
+} from '../src/shared/types'
 
 const start = { x: 100, y: 100, width: 300, height: 200 }
 
@@ -86,16 +91,91 @@ describe('collapsedBounds', () => {
       height: 200
     })
   })
+  it('keeps the taller strip of a phone panel on the bar edge', () => {
+    const size = collapsedBarSize('phone')
+    expect(size).toBeGreaterThan(collapsedBarSize('default'))
+    expect(collapsedBounds(expanded, 'down', size)).toEqual({
+      x: 10,
+      y: 300 - size,
+      width: 300,
+      height: size
+    })
+    expect(collapsedBounds(expanded, 'right', size)).toEqual({
+      x: 310 - size,
+      y: 100,
+      width: size,
+      height: 200
+    })
+  })
+})
+
+describe('collapsedBounds for a folder card', () => {
+  const expanded = { x: 10, y: 100, width: 300, height: 200 }
+  const size = collapsedBarSize('folder')
+  const length = collapsedLength('folder')
+  it('is a square', () => {
+    expect(length).toBe(size)
+  })
+  it('sits in the corner on the bar edge, at the top or left end', () => {
+    expect(collapsedBounds(expanded, 'up', size, length)).toEqual({
+      x: 10,
+      y: 100,
+      width: size,
+      height: size
+    })
+    expect(collapsedBounds(expanded, 'down', size, length)).toEqual({
+      x: 10,
+      y: 300 - size,
+      width: size,
+      height: size
+    })
+    expect(collapsedBounds(expanded, 'left', size, length)).toEqual({
+      x: 10,
+      y: 100,
+      width: size,
+      height: size
+    })
+    expect(collapsedBounds(expanded, 'right', size, length)).toEqual({
+      x: 310 - size,
+      y: 100,
+      width: size,
+      height: size
+    })
+  })
 })
 
 describe('expandedFromCollapsed', () => {
   const expanded = { x: 10, y: 100, width: 300, height: 200 }
   it('round-trips an unmoved panel in every direction', () => {
     for (const dir of ['up', 'down', 'left', 'right'] as const) {
-      expect(expandedFromCollapsed(collapsedBounds(expanded, dir, 30), expanded, dir)).toEqual(
-        expanded
-      )
+      for (const size of [30, collapsedBarSize('phone')]) {
+        expect(expandedFromCollapsed(collapsedBounds(expanded, dir, size), expanded, dir)).toEqual(
+          expanded
+        )
+      }
     }
+  })
+  it('round-trips an unmoved folder card in every direction', () => {
+    const size = collapsedBarSize('folder')
+    for (const dir of ['up', 'down', 'left', 'right'] as const) {
+      const card = collapsedBounds(expanded, dir, size, collapsedLength('folder'))
+      expect(expandedFromCollapsed(card, expanded, dir, true)).toEqual(expanded)
+    }
+  })
+  it('keeps the expanded size when a folder card is moved', () => {
+    const win = { x: 600, y: 400, width: 122, height: 122 }
+    expect(expandedFromCollapsed(win, expanded, 'up', true)).toEqual({
+      x: 600,
+      y: 400,
+      width: 300,
+      height: 200
+    })
+    expect(expandedFromCollapsed(win, expanded, 'right', true)).toEqual({
+      x: 422,
+      y: 400,
+      width: 300,
+      height: 200
+    })
   })
   it('moves the expanded panel with its collapsed bar', () => {
     const win = { x: 50, y: 500, width: 260, height: 30 }

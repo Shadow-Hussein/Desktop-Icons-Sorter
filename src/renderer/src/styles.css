@@ -31,6 +31,7 @@ body.view-panel #root {
 }
 
 .panel {
+  --sep: rgba(255, 255, 255, 0.08);
   position: relative;
   height: 100%;
   display: flex;
@@ -44,7 +45,7 @@ body.view-panel #root {
 /* Windows can keep a collapsed window larger than the bar; leave the rest
    transparent, with the bar on the edge it collapses toward. */
 .panel.collapsed {
-  flex: 0 0 var(--titlebar);
+  flex: 0 0 var(--collapsed-bar, var(--titlebar));
 }
 
 .panel.collapsed.bar-down {
@@ -54,7 +55,7 @@ body.view-panel #root {
 .panel.collapsed.bar-left,
 .panel.collapsed.bar-right {
   flex: 1 1 auto;
-  width: var(--titlebar);
+  width: var(--collapsed-bar, var(--titlebar));
 }
 
 .panel.collapsed.bar-right {
@@ -76,7 +77,7 @@ body.view-panel #root {
 }
 
 .panel:not(.collapsed) .titlebar {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--sep);
 }
 
 /* The title bar sits on the edge the panel collapses toward. */
@@ -97,17 +98,17 @@ body.view-panel #root {
 
 .panel.bar-down:not(.collapsed) .titlebar {
   border-bottom: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--sep);
 }
 
 .panel.bar-left:not(.collapsed) .titlebar {
   border-bottom: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid var(--sep);
 }
 
 .panel.bar-right:not(.collapsed) .titlebar {
   border-bottom: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 1px solid var(--sep);
 }
 
 /* Vertical title bar for panels that collapse sideways. */
@@ -182,6 +183,151 @@ body.view-panel #root {
 
 .tb-btn:focus-visible {
   outline: 2px solid var(--accent);
+}
+
+/* ------------------------------------------------------- header shapes */
+
+/* Phone: collapsed, the panel is a rounded card with its apps under the title.
+   Phone folder: the same, as a square with a 2 x 2 grid of apps. */
+.panel.shape-phone.collapsed,
+.panel.shape-folder.collapsed {
+  border-radius: 14px;
+}
+
+.peek {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  padding: 6px 8px;
+  overflow: hidden;
+}
+
+/* Apps that don't fit wrap onto a hidden second row (or column). */
+.panel.bar-left .peek,
+.panel.bar-right .peek {
+  flex-direction: column;
+  padding: 8px 6px;
+}
+
+.peek-app {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.peek-app:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.peek-app:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.peek-app img {
+  display: block;
+}
+
+.peek-app .icon-placeholder {
+  width: 28px;
+  height: 28px;
+}
+
+/* Exactly square, even when Windows rounds the window a pixel or two larger. */
+.panel.shape-folder.collapsed.bar-up,
+.panel.shape-folder.collapsed.bar-down {
+  width: var(--collapsed-bar);
+}
+
+.panel.shape-folder.collapsed.bar-left,
+.panel.shape-folder.collapsed.bar-right {
+  flex: 0 0 var(--collapsed-bar);
+}
+
+.panel.shape-folder .peek {
+  display: grid;
+  grid-template-columns: repeat(2, 36px);
+  grid-auto-rows: 36px;
+  gap: 4px;
+  place-content: center;
+  padding: 8px;
+}
+
+.peek-empty {
+  margin: auto;
+  opacity: 0.6;
+  font-style: italic;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+}
+
+.panel.bar-left .peek-empty,
+.panel.bar-right .peek-empty {
+  writing-mode: vertical-rl;
+}
+
+.panel.shape-folder .peek-empty {
+  grid-column: 1 / -1;
+  white-space: normal;
+  text-align: center;
+  writing-mode: horizontal-tb;
+}
+
+/* Pill: the bar is a capsule inset from the panel's edges. */
+.panel.shape-pill {
+  --sep: transparent;
+}
+
+.panel.shape-pill .titlebar {
+  flex-basis: calc(var(--titlebar) - 6px);
+  height: calc(var(--titlebar) - 6px);
+  margin: 3px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.panel.shape-pill.bar-left .titlebar,
+.panel.shape-pill.bar-right .titlebar {
+  height: auto;
+  padding: 3px 0;
+}
+
+.panel.shape-pill.bar-up .titlebar,
+.panel.shape-pill.bar-down .titlebar {
+  padding: 0 3px;
+}
+
+.panel.shape-pill .tb-btn {
+  border-radius: 999px;
+}
+
+.panel.shape-pill.collapsed {
+  border-color: transparent;
+}
+
+/* Minimal: no bar until collapsed; the buttons appear on hover. */
+.panel.shape-minimal {
+  --sep: transparent;
+}
+
+.panel.shape-minimal:not(.collapsed) .chevron {
+  opacity: 0;
+}
+
+.panel.shape-minimal:hover .chevron,
+.panel.shape-minimal .chevron:focus-visible {
+  opacity: 0.75;
 }
 
 /* Points at the content when expanded, and a quarter turn back when collapsed. */
@@ -437,12 +583,11 @@ body.view-settings #root {
 
 .preview-fill {
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
-.preview-fill.bar-down,
-.preview-fill.bar-left,
-.preview-fill.bar-right {
-  display: flex;
+.preview-fill.bar-down {
   flex-direction: column-reverse;
 }
 
@@ -464,10 +609,58 @@ body.view-settings #root {
 }
 
 .preview-bar {
+  flex: 0 0 26px;
   height: 26px;
   display: grid;
   place-items: center;
   font-weight: 600;
+}
+
+.preview-fill.shape-pill .preview-bar {
+  flex-basis: 20px;
+  height: 20px;
+  margin: 3px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.preview-fill.shape-pill.bar-left .preview-bar,
+.preview-fill.shape-pill.bar-right .preview-bar {
+  height: auto;
+}
+
+.preview-peek {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 8px;
+  overflow: hidden;
+}
+
+.preview-fill.bar-left .preview-peek,
+.preview-fill.bar-right .preview-peek {
+  flex-direction: column;
+  padding: 6px;
+}
+
+.preview-peek span {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.preview-fill.shape-folder .preview-peek {
+  display: grid;
+  grid-template-columns: repeat(2, 11px);
+  gap: 3px;
+  padding: 6px;
+}
+
+.preview-fill.shape-folder .preview-peek span {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
 }
 
 .row {

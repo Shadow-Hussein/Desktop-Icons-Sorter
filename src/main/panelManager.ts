@@ -19,7 +19,7 @@ import type {
   ResizeEdge,
   SortBy
 } from '../shared/types'
-import { ICON_PIXELS, IPC, TITLE_BAR_HEIGHT } from '../shared/types'
+import { collapsedBarSize, collapsedLength, ICON_PIXELS, IPC } from '../shared/types'
 import { attachToDesktop, needsReattach, sendToBottom } from './desktopLayer'
 import { isInside, listItems, moveInto, renameItem, samePath } from './folderService'
 import {
@@ -113,7 +113,14 @@ export class PanelManager {
   }
 
   private windowBounds(p: PanelConfig): Bounds {
-    return p.collapsed ? collapsedBounds(p.bounds, p.collapseDirection, TITLE_BAR_HEIGHT) : p.bounds
+    return p.collapsed
+      ? collapsedBounds(
+          p.bounds,
+          p.collapseDirection,
+          collapsedBarSize(p.headerShape),
+          collapsedLength(p.headerShape)
+        )
+      : p.bounds
   }
 
   /**
@@ -240,7 +247,12 @@ export class PanelManager {
       rt.settingsWin?.setTitle(`Panel settings: ${updated.title}`)
     }
     this.pushState(panelId)
-    if (rt && updated.collapsed && updated.collapseDirection !== before.collapseDirection) {
+    if (
+      rt &&
+      updated.collapsed &&
+      (updated.collapseDirection !== before.collapseDirection ||
+        updated.headerShape !== before.headerShape)
+    ) {
       this.applyBounds(rt.win, updated)
     }
     if (patch.sortBy !== undefined && patch.sortBy !== before.sortBy) void this.pushItems(panelId)
@@ -312,6 +324,9 @@ export class PanelManager {
   pointerStart(panelId: string, kind: 'move' | 'resize', edge?: ResizeEdge): void {
     const rt = this.panels.get(panelId)
     if (!rt || this.store.get().locked) return
+    // A collapsed folder card has a fixed size.
+    const p = this.store.getPanel(panelId)
+    if (kind === 'resize' && p?.collapsed && collapsedLength(p.headerShape) !== null) return
     rt.pointer = {
       kind,
       edge,
@@ -349,7 +364,14 @@ export class PanelManager {
     rt.pointer = null
     const b = rt.win.getBounds()
     this.store.updatePanel(panelId, (p) => {
-      p.bounds = p.collapsed ? expandedFromCollapsed(b, p.bounds, p.collapseDirection) : b
+      p.bounds = p.collapsed
+        ? expandedFromCollapsed(
+            b,
+            p.bounds,
+            p.collapseDirection,
+            collapsedLength(p.headerShape) !== null
+          )
+        : b
     })
   }
 
@@ -680,9 +702,9 @@ export class PanelManager {
     const area = screen.getDisplayMatching(panelBounds).workArea
     const win = new BrowserWindow({
       // Content size, so the frame doesn't eat into it; tall enough to show
-      // every section (708 px) without scrolling.
+      // every section (738 px) without scrolling.
       width: 360,
-      height: 720,
+      height: 740,
       useContentSize: true,
       resizable: false,
       minimizable: false,
