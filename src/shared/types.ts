@@ -2,6 +2,7 @@ export type IconSize = 'small' | 'medium' | 'large'
 export type SortBy = 'name' | 'type' | 'modified'
 export type CollapseDirection = 'up' | 'down' | 'left' | 'right'
 export type HeaderShape = 'default' | 'phone' | 'folder' | 'pill' | 'minimal'
+export type CollapseAlign = 'start' | 'center' | 'end'
 export type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 export interface Bounds {
@@ -24,6 +25,16 @@ export interface PanelConfig {
    * apps, and a collapsed folder panel is a square with four of them.
    */
   headerShape: HeaderShape
+  /**
+   * Where a collapsed folder square sits along its title bar's edge: the left,
+   * middle or right of it (top, middle or bottom for side bars).
+   */
+  collapseAlign: CollapseAlign
+  /**
+   * Takes part in stacking (see AppConfig.stacking): collapsing it moves the
+   * panels stacked against it, and it moves with a panel it is stacked against.
+   */
+  stackable: boolean
   /** Background color as #rrggbb. */
   bgColor: string
   /** Background opacity 0–1. Icons and text are not affected. */
@@ -43,7 +54,18 @@ export interface AppConfig {
   startWithWindows: boolean
   /** When locked, panels cannot be moved or resized. */
   locked: boolean
+  /** Moving or resizing a panel snaps its edges to screen edges and other panels. */
+  snapping: boolean
+  /**
+   * Collapsing a panel moves the panels stacked against its far edge (below
+   * it, for one that collapses up) to fill the space, and expanding moves
+   * them back.
+   */
+  stacking: boolean
 }
+
+/** App-wide settings, shown in the app settings window. */
+export type AppSettings = Pick<AppConfig, 'startWithWindows' | 'locked' | 'snapping' | 'stacking'>
 
 /** Fields of a panel the renderer is allowed to change directly. */
 export type PanelPatch = Partial<
@@ -59,6 +81,8 @@ export type PanelPatch = Partial<
     | 'sortBy'
     | 'collapseDirection'
     | 'headerShape'
+    | 'collapseAlign'
+    | 'stackable'
   >
 >
 
@@ -77,9 +101,13 @@ export interface PanelItem {
 export interface PanelState {
   panel: PanelConfig
   locked: boolean
+  /** Stacking is on app-wide (AppConfig.stacking). */
+  stacking: boolean
 }
 
 export const TITLE_BAR_HEIGHT = 30
+/** How long a panel takes to collapse or expand. */
+export const COLLAPSE_ANIMATION_MS = 200
 /** The row of apps under a collapsed phone panel's title: a 32 px icon plus padding. */
 export const PHONE_PEEK_SIZE = 48
 /** A collapsed folder panel's square: the title bar over a 2 x 2 grid of 36 px apps. */
@@ -130,13 +158,18 @@ export const IPC = {
 
   openSettings: 'settings:open',
   settingsChooseFolder: 'settings:choose-folder',
-  settingsDeletePanel: 'settings:delete-panel'
+  settingsDeletePanel: 'settings:delete-panel',
+
+  getAppSettings: 'app:get-settings',
+  appSettingsChanged: 'app:settings-changed',
+  updateAppSettings: 'app:update-settings'
 } as const
 
 /** API exposed to renderers as `window.sorter` by the preload script. */
 export interface SorterApi {
+  /** Empty in the app settings window, which belongs to no panel. */
   panelId: string
-  view: 'panel' | 'settings'
+  view: 'panel' | 'settings' | 'app'
   getState(): Promise<PanelState>
   onStateChanged(cb: (state: PanelState) => void): () => void
   updatePanel(patch: PanelPatch): Promise<void>
@@ -169,4 +202,9 @@ export interface SorterApi {
   openSettings(): void
   chooseFolder(): Promise<void>
   deletePanel(): Promise<void>
+
+  /** App settings; only the app settings window may call these. */
+  getAppSettings(): Promise<AppSettings>
+  onAppSettingsChanged(cb: (settings: AppSettings) => void): () => void
+  updateAppSettings(patch: Partial<AppSettings>): Promise<void>
 }

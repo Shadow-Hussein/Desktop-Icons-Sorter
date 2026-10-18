@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
-import { IPC, type PanelItem, type PanelState, type SorterApi } from '../shared/types'
+import {
+  IPC,
+  type AppSettings,
+  type PanelItem,
+  type PanelState,
+  type SorterApi
+} from '../shared/types'
 
 const params = new URLSearchParams(window.location.search)
+const view = params.get('view')
 
 function subscribe<T extends unknown[]>(channel: string, cb: (...args: T) => void): () => void {
   const listener = (_e: IpcRendererEvent, ...args: unknown[]): void => cb(...(args as T))
@@ -11,7 +18,7 @@ function subscribe<T extends unknown[]>(channel: string, cb: (...args: T) => voi
 
 const api: SorterApi = {
   panelId: params.get('panel') ?? '',
-  view: params.get('view') === 'settings' ? 'settings' : 'panel',
+  view: view === 'settings' || view === 'app' ? view : 'panel',
 
   getState: () => ipcRenderer.invoke(IPC.getState),
   onStateChanged: (cb) => subscribe<[PanelState]>(IPC.stateChanged, cb),
@@ -41,7 +48,11 @@ const api: SorterApi = {
 
   openSettings: () => ipcRenderer.send(IPC.openSettings),
   chooseFolder: () => ipcRenderer.invoke(IPC.settingsChooseFolder),
-  deletePanel: () => ipcRenderer.invoke(IPC.settingsDeletePanel)
+  deletePanel: () => ipcRenderer.invoke(IPC.settingsDeletePanel),
+
+  getAppSettings: () => ipcRenderer.invoke(IPC.getAppSettings),
+  onAppSettingsChanged: (cb) => subscribe<[AppSettings]>(IPC.appSettingsChanged, cb),
+  updateAppSettings: (patch) => ipcRenderer.invoke(IPC.updateAppSettings, patch)
 }
 
 contextBridge.exposeInMainWorld('sorter', api)

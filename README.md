@@ -12,16 +12,18 @@ Free and open source under the [MIT License](LICENSE).
   - title (double-click it to rename)
   - background color and transparency
   - title bar color, transparency and text color
-  - title bar shape: default, phone (a collapsed panel shows a row of its apps you can click to open), phone folder (a collapsed panel is a square with four of its apps), pill, or minimal (no bar until the panel collapses)
+  - title bar shape: default, dock (a collapsed panel shows a row of its apps you can click to open), tile (a collapsed panel is a square with four of its apps, at the start, middle or end of its edge), pill, or minimal (no bar until the panel collapses)
   - color presets
   - icon size (small, medium, large) and sort order (name, type, date modified)
 - **Collapsible.** Click the chevron or double-click an empty part of the title bar to roll the panel up to its title bar. In panel settings, choose the edge it collapses toward: up, down, left or right. The title bar sits on that edge, so a bottom bar suits panels near the taskbar and a side bar suits panels along a screen edge.
-- **Move and resize** by dragging the title bar or the edges. Panels snap to screen edges, and you can lock all panels from the tray.
+- **Stackable.** Put panels against each other, say one under another, and collapsing the top one moves the ones below it up to fill the space; expanding it moves them back down. It works the same way for panels that collapse down, left or right. Turn it off for every panel in app settings, or leave one panel out of it in its panel settings.
+- **Move and resize** by dragging the title bar or the edges. While you drag, a panel's edges snap to screen edges and to other panels' edges, so panels line up and sit flush against each other; keep dragging to pull away. Turn snapping off in app settings, and lock all panels from the tray.
+- **App settings** (tray menu > Settings…, or App settings… in a panel's title bar menu): snapping, stacking, locking panels and starting with Windows.
 - **Item actions:**
   - double-click to open
   - drag out to Explorer, the desktop or another panel
   - right-click for Open file location, Rename (or F2), Move to Desktop or another panel, and Move to Recycle Bin
-- **Tray menu:** New panel, Show/Hide panels, Lock panels, Start with Windows, Open config folder, Quit.
+- **Tray menu:** New panel, Show/Hide panels, Lock panels, Start with Windows, Settings…, Open config folder, Quit.
 - **Safe deletes.** Deleting a panel asks whether to move its items back to the Desktop. Files are never deleted.
 
 ## Getting started
@@ -84,12 +86,13 @@ src/
     desktopLayer.ts        Win32 (via koffi): keeps panels on the desktop layer
     folderService.ts       List, move (collision-safe, cross-drive) and rename items
     store.ts               Validated, atomic, debounced config.json
-    geometry.ts            Resize, edge snapping, keeping panels on screen
+    geometry.ts            Resize, snapping to screen and panel edges, keeping panels on screen
+    stack.ts               Which panels move when a stacked panel collapses or expands
     icons.ts, watcher.ts   Shell icons, folder watching (fs.watch)
     ipc.ts                 IPC handlers; every payload is validated
     validate.ts            Small schema checks for config and IPC payloads
   preload/index.ts         contextBridge API (renderers are sandboxed)
-  renderer/                React UI: panel view and settings window
+  renderer/                React UI: panel view, panel settings and app settings windows
 tests/                     Unit tests
 ```
 

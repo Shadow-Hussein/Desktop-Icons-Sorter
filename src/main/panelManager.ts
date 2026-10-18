@@ -1,15 +1,19 @@
 import {
   BrowserWindow,
   Menu,
+  app,
   dialog,
   nativeImage,
   screen,
   shell,
-  type MenuItemConstructorOptions
+  systemPreferences,
+  type MenuItemConstructorOptions,
+  type WebPreferences
 } from 'electron'
 import { existsSync, promises as fsp } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type {
+  AppSettings,
   Bounds,
   CollapseDirection,
   IconSize,
@@ -19,7 +23,13 @@ import type {
   ResizeEdge,
   SortBy
 } from '../shared/types'
-import { collapsedBarSize, collapsedLength, ICON_PIXELS, IPC } from '../shared/types'
+import {
+  COLLAPSE_ANIMATION_MS,
+  collapsedBarSize,
+  collapsedLength,
+  ICON_PIXELS,
+  IPC
+} from '../shared/types'
 import { attachToDesktop, needsReattach, sendToBottom } from './desktopLayer'
 import { isInside, listItems, moveInto, renameItem, samePath } from './folderService'
 import {
@@ -28,10 +38,15 @@ import {
   expandedFromCollapsed,
   isSideways,
   resizeBounds,
-  snapToArea
+  snapLines,
+  snapMove,
+  snapResize,
+  visualBounds,
+  type SnapLines
 } from './geometry'
 import { getIconDataUrl } from './icons'
 import { getShortcutOverlayDataUrl } from './shortcutOverlay'
+import { stackMove } from './stack'
 import { ConfigStore, createPanel, folderNameFromTitle } from './store'
 import { createTrayIcon } from './trayIcon'
 import { FolderWatcher } from './watcher'
@@ -52,6 +67,12 @@ interface PointerSession {
   edge?: ResizeEdge
   startCursor: { x: number; y: number }
   startBounds: Bounds
+  /** The bounds last asked for. Saved at the end instead of the window's, which Windows may have rounded. */
+  last: Bounds
+  /** What the panel covers at the start, which is what snaps (see visualBounds). */
+  startVisual: Bounds
+  /** Other panels' edges, or null when snapping is off. */
+  lines: SnapLines | null
 }
 
 interface PanelRuntime {
@@ -59,7 +80,17 @@ interface PanelRuntime {
   watcher: FolderWatcher
   pointer: PointerSession | null
   settingsWin: BrowserWindow | null
+  /** Shrinks the window once the renderer's collapse animation is over. */
+  collapseTimer: NodeJS.Timeout | null
+  /** Moves the window along with a panel in its stack that collapses or expands. */
+  slide: NodeJS.Timeout | null
 }
+
+/**
+ * Windows won't make a transparent window much shorter than 39 px. 40 is
+ * also a whole number of pixels at 125%, 150% and 175% scaling.
+ */
+const MIN_WINDOW_DEPTH = 40
 
 /**
  * All windows share one renderer process (see index.ts), so a crash blanks
@@ -75,12 +106,18 @@ function reloadOnCrash(win: BrowserWindow): void {
   })
 }
 
+/** Login items exist only on Windows and macOS. */
+export function canStartWithOs(): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin'
+}
+
 export class PanelManager {
   private readonly panels = new Map<string, PanelRuntime>()
   /** webContents id → panel id, for both panel and settings windows. */
   private readonly senders = new Map<number, string>()
   private hidden = false
   private reattachTimer: NodeJS.Timeout | null = null
+  private appWin: { win: BrowserWindow; webContentsId: number } | null = null
 
   constructor(private readonly opts: PanelManagerOptions) {}
 
@@ -112,13 +149,27 @@ export class PanelManager {
     return this.senders.get(webContentsId)
   }
 
+  /** The same locked-down preferences for every window. */
+  private webPreferences(): WebPreferences {
+    return {
+      preload: this.opts.preloadPath,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      spellcheck: false
+    }
+  }
+
   private windowBounds(p: PanelConfig): Bounds {
     return p.collapsed
       ? collapsedBounds(
           p.bounds,
           p.collapseDirection,
-          collapsedBarSize(p.headerShape),
-          collapsedLength(p.headerShape)
+          // Ask for at least Windows' minimum up front (see placeWindow), so a
+          // collapsing panel doesn't visibly jump while placeWindow corrects it.
+          Math.max(collapsedBarSize(p.headerShape), MIN_WINDOW_DEPTH),
+          collapsedLength(p.headerShape),
+          p.collapseAlign
         )
       : p.bounds
   }
@@ -165,20 +216,16 @@ export class PanelManager {
       title: current.title,
       // WS_EX_TOOLWINDOW on Windows: keeps panels out of Alt+Tab.
       ...(process.platform === 'win32' ? { type: 'toolbar' } : {}),
-      webPreferences: {
-        preload: this.opts.preloadPath,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        spellcheck: false
-      }
+      webPreferences: this.webPreferences()
     })
     this.applyBounds(win, current)
     const rt: PanelRuntime = {
       win,
       watcher: new FolderWatcher(() => void this.pushItems(panel.id)),
       pointer: null,
-      settingsWin: null
+      settingsWin: null,
+      collapseTimer: null,
+      slide: null
     }
     this.panels.set(panel.id, rt)
     const wcId = win.webContents.id
@@ -195,6 +242,8 @@ export class PanelManager {
     win.webContents.on('did-finish-load', () => win.setBackgroundColor('#00000000'))
     win.on('blur', () => sendToBottom(win))
     win.on('closed', () => {
+      if (rt.collapseTimer) clearTimeout(rt.collapseTimer)
+      if (rt.slide) clearTimeout(rt.slide)
       this.senders.delete(wcId)
       rt.watcher.close()
       rt.settingsWin?.close()
@@ -221,7 +270,8 @@ export class PanelManager {
 
   getState(panelId: string): PanelState | undefined {
     const panel = this.store.getPanel(panelId)
-    return panel && { panel, locked: this.store.get().locked }
+    const { locked, stacking } = this.store.get()
+    return panel && { panel, locked, stacking }
   }
 
   private pushState(panelId: string): void {
@@ -251,7 +301,8 @@ export class PanelManager {
       rt &&
       updated.collapsed &&
       (updated.collapseDirection !== before.collapseDirection ||
-        updated.headerShape !== before.headerShape)
+        updated.headerShape !== before.headerShape ||
+        updated.collapseAlign !== before.collapseAlign)
     ) {
       this.applyBounds(rt.win, updated)
     }
@@ -259,44 +310,103 @@ export class PanelManager {
   }
 
   toggleCollapsed(panelId: string): void {
+    const before = this.store.getPanel(panelId)
     const updated = this.store.updatePanel(panelId, (p) => (p.collapsed = !p.collapsed))
     const rt = this.panels.get(panelId)
-    if (!updated || !rt) return
-    // Let the renderer switch layout first so the content never looks squashed.
-    this.pushState(panelId)
-    this.animateBounds(
-      rt.win,
-      this.windowBounds(updated),
-      updated.collapsed ? updated.collapseDirection : null
-    )
+    if (!before || !updated || !rt) return
+    // The renderer animates the panel with a CSS transition inside a window
+    // that holds the expanded size, which is far smoother than resizing the
+    // window every frame. So the window grows before expanding and shrinks
+    // only after collapsing has finished.
+    if (rt.collapseTimer) clearTimeout(rt.collapseTimer)
+    rt.collapseTimer = null
+    if (updated.collapsed) {
+      this.pushState(panelId)
+      rt.collapseTimer = setTimeout(() => this.finishCollapse(panelId), COLLAPSE_ANIMATION_MS)
+    } else {
+      this.applyBounds(rt.win, updated)
+      this.pushState(panelId)
+    }
+    if (this.store.get().stacking) this.moveStack(before, updated)
   }
 
-  /** Slides the window's edges to `target`; the edge with the title bar stays put. */
-  private animateBounds(
-    win: BrowserWindow,
-    target: Bounds,
-    barSide: CollapseDirection | null
-  ): void {
-    const start = win.getBounds()
-    const steps = 6
-    let i = 0
-    const tick = (): void => {
-      if (win.isDestroyed()) return
-      i++
-      const at = (from: number, to: number): number =>
-        i >= steps ? to : Math.round(from + ((to - from) * i) / steps)
-      const next = {
-        x: at(start.x, target.x),
-        y: at(start.y, target.y),
-        width: at(start.width, target.width),
-        height: at(start.height, target.height)
+  /** Moves the panels stacked against a panel that collapsed or expanded (see stackMove). */
+  private moveStack(before: PanelConfig, after: PanelConfig): void {
+    const move = stackMove(before, after, this.store.get().panels)
+    // Leave alone a panel the user is dragging right now.
+    const ids = move.ids.filter((id) => !this.panels.get(id)?.pointer)
+    if (!ids.length) return
+    this.store.update((c) => {
+      for (const p of c.panels) {
+        if (ids.includes(p.id)) {
+          p.bounds = { ...p.bounds, x: p.bounds.x + move.dx, y: p.bounds.y + move.dy }
+        }
       }
-      if (i < steps) {
-        win.setBounds(next)
-        setTimeout(tick, 12)
-      } else this.placeWindow(win, next, barSide)
+    })
+    for (const id of ids) this.slideWindow(id)
+  }
+
+  /** Where a panel's window belongs now: mid-collapse it still holds the expanded size. */
+  private targetBounds(rt: PanelRuntime, p: PanelConfig): Bounds {
+    return rt.collapseTimer ? p.bounds : this.windowBounds(p)
+  }
+
+  /**
+   * Slides a panel's window to where its config now puts it, alongside the
+   * collapse animation. Moving a window is cheap, unlike the per-frame resize
+   * the collapse animation avoids.
+   */
+  private slideWindow(panelId: string): void {
+    const rt = this.panels.get(panelId)
+    const p = this.store.getPanel(panelId)
+    if (!rt || !p || rt.win.isDestroyed()) return
+    this.stopSlide(panelId, false)
+    const to = this.targetBounds(rt, p)
+    const [fromX, fromY] = rt.win.getPosition()
+    // At fractional display scaling, setPosition can grow the window by a
+    // pixel each call, so every step sets the whole bounds, sized from the
+    // config rather than from the window.
+    const place = (x: number, y: number): void => rt.win.setBounds({ ...to, x, y })
+    if (systemPreferences.getAnimationSettings().prefersReducedMotion) {
+      place(to.x, to.y)
+      return
     }
-    tick()
+    const start = Date.now()
+    const tick = (): void => {
+      rt.slide = null
+      if (rt.win.isDestroyed()) return
+      const t = Math.min(1, (Date.now() - start) / COLLAPSE_ANIMATION_MS)
+      // Close to the renderer's ease-out curve, so stacked panels move together.
+      const k = 1 - (1 - t) ** 4
+      place(Math.round(fromX + (to.x - fromX) * k), Math.round(fromY + (to.y - fromY) * k))
+      if (t < 1) rt.slide = setTimeout(tick, 16)
+    }
+    rt.slide = setTimeout(tick, 16)
+  }
+
+  /** Stops a slide, optionally jumping to where it was headed. */
+  private stopSlide(panelId: string, finish: boolean): void {
+    const rt = this.panels.get(panelId)
+    const p = this.store.getPanel(panelId)
+    if (!rt?.slide) return
+    clearTimeout(rt.slide)
+    rt.slide = null
+    if (finish && p && !rt.win.isDestroyed()) rt.win.setBounds(this.targetBounds(rt, p))
+  }
+
+  /** Shrinks a collapsing panel's window to its bar now, if it isn't already. */
+  private finishCollapse(panelId: string): void {
+    const rt = this.panels.get(panelId)
+    if (!rt?.collapseTimer) return
+    clearTimeout(rt.collapseTimer)
+    rt.collapseTimer = null
+    const p = this.store.getPanel(panelId)
+    if (!p?.collapsed || rt.win.isDestroyed()) return
+    this.applyBounds(rt.win, p)
+    // The window can be deeper than the bar, and panels stacked against the
+    // bar reach into that transparent part; keep it below them so it doesn't
+    // take their clicks.
+    sendToBottom(rt.win)
   }
 
   setLocked(locked: boolean): void {
@@ -324,15 +434,34 @@ export class PanelManager {
   pointerStart(panelId: string, kind: 'move' | 'resize', edge?: ResizeEdge): void {
     const rt = this.panels.get(panelId)
     if (!rt || this.store.get().locked) return
-    // A collapsed folder card has a fixed size.
     const p = this.store.getPanel(panelId)
-    if (kind === 'resize' && p?.collapsed && collapsedLength(p.headerShape) !== null) return
+    if (!p) return
+    // A collapsed folder card has a fixed size.
+    if (kind === 'resize' && p.collapsed && collapsedLength(p.headerShape) !== null) return
+    // Moving mid-collapse would save the still-expanded window as the bar, and
+    // mid-slide the window isn't yet where the config says.
+    this.finishCollapse(panelId)
+    this.stopSlide(panelId, true)
+    const { panels, snapping } = this.store.get()
+    // The size comes from the config: the window's own can be a pixel off at
+    // fractional scaling, and reusing it would let panels creep bigger.
+    const at = rt.win.getBounds()
+    const startBounds = { ...this.windowBounds(p), x: at.x, y: at.y }
     rt.pointer = {
       kind,
       edge,
       startCursor: screen.getCursorScreenPoint(),
-      startBounds: rt.win.getBounds()
+      startBounds,
+      last: startBounds,
+      startVisual: visualBounds(p),
+      lines: snapping ? snapLines(panels.filter((o) => o.id !== panelId).map(visualBounds)) : null
     }
+  }
+
+  /** The panels' snap lines plus the edges of the work area under the cursor. */
+  private withWorkArea(lines: SnapLines, cursor: { x: number; y: number }): SnapLines {
+    const area = snapLines([screen.getDisplayNearestPoint(cursor).workArea])
+    return { x: [...lines.x, ...area.x], y: [...lines.y, ...area.y] }
   }
 
   pointerMove(panelId: string): void {
@@ -342,10 +471,17 @@ export class PanelManager {
     const c = screen.getCursorScreenPoint()
     const dx = c.x - s.startCursor.x
     const dy = c.y - s.startCursor.y
+    const lines = s.lines && this.withWorkArea(s.lines, c)
     let next: Bounds
     if (s.kind === 'move') {
-      next = { ...s.startBounds, x: s.startBounds.x + dx, y: s.startBounds.y + dy }
-      next = snapToArea(next, screen.getDisplayNearestPoint(c).workArea)
+      // Snap what the panel covers, then move the window by as much.
+      const moved = { ...s.startVisual, x: s.startVisual.x + dx, y: s.startVisual.y + dy }
+      const snapped = lines ? snapMove(moved, lines) : moved
+      next = {
+        ...s.startBounds,
+        x: s.startBounds.x + dx + snapped.x - moved.x,
+        y: s.startBounds.y + dy + snapped.y - moved.y
+      }
     } else {
       // A collapsed panel only resizes along its title bar.
       const p = this.store.getPanel(panelId)
@@ -354,22 +490,38 @@ export class PanelManager {
       next = resizeBounds(s.startBounds, s.edge!, sideways ? 0 : dx, flat ? 0 : dy)
       if (flat) next = { ...next, y: s.startBounds.y, height: s.startBounds.height }
       if (sideways) next = { ...next, x: s.startBounds.x, width: s.startBounds.width }
+      // Along the bar, the window's edges are the bar's, so they can snap as they are.
+      const edge = flat
+        ? s.edge!.replace(/[ns]/g, '')
+        : sideways
+          ? s.edge!.replace(/[ew]/g, '')
+          : s.edge!
+      if (lines) next = snapResize(next, edge, lines)
     }
+    s.last = next
     rt.win.setBounds(next)
   }
 
   pointerEnd(panelId: string): void {
     const rt = this.panels.get(panelId)
-    if (!rt?.pointer) return
+    const s = rt?.pointer
+    if (!rt || !s) return
     rt.pointer = null
-    const b = rt.win.getBounds()
+    const b = s.last
     this.store.updatePanel(panelId, (p) => {
+      if (s.kind === 'move') {
+        const dx = b.x - s.startBounds.x
+        const dy = b.y - s.startBounds.y
+        p.bounds = { ...p.bounds, x: p.bounds.x + dx, y: p.bounds.y + dy }
+        return
+      }
       p.bounds = p.collapsed
         ? expandedFromCollapsed(
             b,
             p.bounds,
             p.collapseDirection,
-            collapsedLength(p.headerShape) !== null
+            collapsedLength(p.headerShape),
+            p.collapseAlign
           )
         : b
     })
@@ -583,6 +735,7 @@ export class PanelManager {
         checked: this.store.get().locked,
         click: (item) => this.setLocked(item.checked)
       },
+      { label: 'App settings…', click: () => void this.openAppSettings() },
       { type: 'separator' },
       { label: 'Delete panel…', click: () => void this.deletePanel(panelId) }
     ]
@@ -701,10 +854,10 @@ export class PanelManager {
     const panelBounds = rt.win.getBounds()
     const area = screen.getDisplayMatching(panelBounds).workArea
     const win = new BrowserWindow({
-      // Content size, so the frame doesn't eat into it; tall enough to show
-      // every section (738 px) without scrolling.
+      // Content size, so the frame doesn't eat into it. Short enough to sit
+      // beside a panel on a small screen; the rest scrolls.
       width: 360,
-      height: 740,
+      height: 520,
       useContentSize: true,
       resizable: false,
       minimizable: false,
@@ -713,13 +866,7 @@ export class PanelManager {
       autoHideMenuBar: true,
       title: `Panel settings: ${p.title}`,
       show: false,
-      webPreferences: {
-        preload: this.opts.preloadPath,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
-        spellcheck: false
-      }
+      webPreferences: this.webPreferences()
     })
     win.setMenu(null)
     // Next to the panel, with the whole window (frame included) on screen.
@@ -743,5 +890,63 @@ export class PanelManager {
     })
     reloadOnCrash(win)
     await this.opts.loadRenderer(win, { view: 'settings', panel: panelId })
+  }
+
+  // ------------------------------------------------------------ app settings
+
+  getAppSettings(): AppSettings {
+    const { startWithWindows, locked, snapping, stacking } = this.store.get()
+    return { startWithWindows, locked, snapping, stacking }
+  }
+
+  updateAppSettings(patch: Partial<AppSettings>): void {
+    if (patch.startWithWindows !== undefined && canStartWithOs()) {
+      app.setLoginItemSettings({ openAtLogin: patch.startWithWindows })
+    }
+    const before = this.store.get()
+    const after = this.store.update((c) => Object.assign(c, patch))
+    // Panels and their settings windows show these.
+    if (after.locked !== before.locked || after.stacking !== before.stacking) this.pushStateAll()
+  }
+
+  isAppSettingsSender(webContentsId: number): boolean {
+    return this.appWin?.webContentsId === webContentsId
+  }
+
+  async openAppSettings(): Promise<void> {
+    if (this.appWin) {
+      this.appWin.win.show()
+      this.appWin.win.focus()
+      return
+    }
+    const win = new BrowserWindow({
+      // Content size, tall enough for every row without scrolling.
+      width: 360,
+      height: 320,
+      useContentSize: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      autoHideMenuBar: true,
+      title: 'Desktop Icons Sorter',
+      show: false,
+      webPreferences: this.webPreferences()
+    })
+    win.setMenu(null)
+    this.appWin = { win, webContentsId: win.webContents.id }
+    // Listen only while the window is open.
+    const off = this.store.onChange(() => {
+      if (!win.isDestroyed()) win.webContents.send(IPC.appSettingsChanged, this.getAppSettings())
+    })
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    win.webContents.on('will-navigate', (e) => e.preventDefault())
+    win.once('ready-to-show', () => win.show())
+    win.on('closed', () => {
+      off()
+      if (this.appWin?.win === win) this.appWin = null
+    })
+    reloadOnCrash(win)
+    await this.opts.loadRenderer(win, { view: 'app' })
   }
 }

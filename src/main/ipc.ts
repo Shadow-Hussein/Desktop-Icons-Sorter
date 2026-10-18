@@ -1,7 +1,7 @@
 import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { IPC } from '../shared/types'
 import type { PanelManager } from './panelManager'
-import { panelPatchSchema } from './store'
+import { appSettingsPatchSchema, panelPatchSchema } from './store'
 import { array, oneOf, string } from './validate'
 
 const pathArg = string({ min: 1, max: 32_767 })
@@ -55,4 +55,17 @@ export function registerIpc(pm: PanelManager): void {
   on(IPC.openSettings, (id) => void pm.openSettings(id))
   handle(IPC.settingsChooseFolder, (id) => pm.chooseFolder(id))
   handle(IPC.settingsDeletePanel, (id) => pm.deletePanel(id))
+
+  // The app settings window belongs to no panel, so it is checked on its own.
+  const fromAppSettings = (e: IpcMainInvokeEvent): void => {
+    if (!pm.isAppSettingsSender(e.sender.id)) throw new Error('IPC from an unknown window')
+  }
+  ipcMain.handle(IPC.getAppSettings, (e) => {
+    fromAppSettings(e)
+    return pm.getAppSettings()
+  })
+  ipcMain.handle(IPC.updateAppSettings, (e, patch) => {
+    fromAppSettings(e)
+    pm.updateAppSettings(appSettingsPatchSchema.parse(patch))
+  })
 }

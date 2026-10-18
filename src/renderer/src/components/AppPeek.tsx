@@ -40,7 +40,7 @@ function PeekApp({ item, iconSize }: { item: PanelItem; iconSize: IconSize }) {
   )
 }
 
-/** The apps a collapsed phone or folder panel shows under its title. */
+/** The apps a collapsed dock or tile panel shows under its title. */
 export function AppPeek({ items, iconSize, textColor, max }: Props) {
   return (
     <div

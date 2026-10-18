@@ -30,35 +30,51 @@ body.view-panel #root {
   flex-direction: column;
 }
 
+/* Collapsing and expanding animate the panel's size inside a window that
+   holds the expanded size (the main process resizes the window once, before
+   expanding or after collapsing), so sizes are explicit lengths that can
+   transition rather than auto. */
 .panel {
   --sep: rgba(255, 255, 255, 0.08);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   position: relative;
-  height: 100%;
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border-radius: var(--radius);
   border: 1px solid rgba(255, 255, 255, 0.14);
   overflow: hidden;
-  transition: box-shadow 120ms;
+  transition:
+    box-shadow 120ms,
+    flex-basis var(--collapse-ms) var(--ease),
+    width var(--collapse-ms) var(--ease),
+    border-radius var(--collapse-ms) var(--ease),
+    border-color var(--collapse-ms) var(--ease),
+    background-color var(--collapse-ms) var(--ease);
 }
 
 /* Windows can keep a collapsed window larger than the bar; leave the rest
-   transparent, with the bar on the edge it collapses toward. */
+   transparent, with the bar on the edge it collapses toward. The edge rules
+   apply while expanded too (where they change nothing), so the panel grows
+   from where its bar is instead of jumping to the top left. */
 .panel.collapsed {
-  flex: 0 0 var(--collapsed-bar, var(--titlebar));
+  flex-basis: var(--collapsed-bar, var(--titlebar));
 }
 
-.panel.collapsed.bar-down {
+.panel.bar-down {
   margin-top: auto;
 }
 
 .panel.collapsed.bar-left,
 .panel.collapsed.bar-right {
-  flex: 1 1 auto;
+  flex-basis: 100%;
   width: var(--collapsed-bar, var(--titlebar));
 }
 
-.panel.collapsed.bar-right {
+.panel.bar-right {
   align-self: flex-end;
 }
 
@@ -69,6 +85,7 @@ body.view-panel #root {
 .titlebar {
   flex: 0 0 var(--titlebar);
   height: var(--titlebar);
+  transition: background-color var(--collapse-ms) var(--ease);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -132,6 +149,14 @@ body.view-panel #root {
   writing-mode: vertical-rl;
 }
 
+/* A left bar reads bottom to top, like a book spine, with the text's top
+   toward the screen edge. */
+.panel.bar-left .title-text,
+.panel.bar-left .title-input,
+.panel.bar-left:not(.shape-folder) .peek-empty {
+  writing-mode: sideways-lr;
+}
+
 .title-text,
 .title-input {
   min-width: 0;
@@ -187,8 +212,9 @@ body.view-panel #root {
 
 /* ------------------------------------------------------- header shapes */
 
-/* Phone: collapsed, the panel is a rounded card with its apps under the title.
-   Phone folder: the same, as a square with a 2 x 2 grid of apps. */
+/* Dock (value 'phone'): collapsed, the panel is a rounded card with its apps
+   under the title. Tile (value 'folder'): the same, as a square with a 2 x 2
+   grid of apps. */
 .panel.shape-phone.collapsed,
 .panel.shape-folder.collapsed {
   border-radius: 14px;
@@ -252,7 +278,29 @@ body.view-panel #root {
 
 .panel.shape-folder.collapsed.bar-left,
 .panel.shape-folder.collapsed.bar-right {
-  flex: 0 0 var(--collapsed-bar);
+  flex-basis: var(--collapsed-bar);
+}
+
+/* Where the square sits along its bar. Like the edge rules, these stay on
+   while expanded, so the panel grows out of the square in place. */
+.panel.shape-folder.bar-up.align-center,
+.panel.shape-folder.bar-down.align-center {
+  align-self: center;
+}
+
+.panel.shape-folder.bar-up.align-end,
+.panel.shape-folder.bar-down.align-end {
+  align-self: flex-end;
+}
+
+.panel.shape-folder.bar-left.align-center,
+.panel.shape-folder.bar-right.align-center {
+  margin: auto 0;
+}
+
+.panel.shape-folder.bar-left.align-end,
+.panel.shape-folder.bar-right.align-end {
+  margin-top: auto;
 }
 
 .panel.shape-folder .peek {
@@ -347,6 +395,29 @@ body.view-panel #root {
 .panel:hover .gear,
 .gear:focus-visible {
   opacity: 0.75;
+}
+
+/* Content fades in as the panel opens, instead of popping in. */
+@keyframes content-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.grid,
+.peek {
+  animation: content-in var(--collapse-ms) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel,
+  .titlebar,
+  .grid,
+  .peek,
+  .chevron svg {
+    transition: none;
+    animation: none;
+  }
 }
 
 .grid {
@@ -527,21 +598,56 @@ body.view-panel #root {
 
 /* ------------------------------------------------------------- settings */
 
-body.view-settings {
+body.view-settings,
+body.view-app {
   background: #f6f7f9;
   color: #1b1d21;
   user-select: none;
 }
 
 @media (prefers-color-scheme: dark) {
-  body.view-settings {
+  body.view-settings,
+  body.view-app {
     background: #1f2124;
     color: #e8eaed;
   }
 }
 
-body.view-settings #root {
+body.view-settings #root,
+body.view-app #root {
   overflow-y: auto;
+}
+
+/* A slim rounded thumb on a clear track, like the panels' own, that firms up
+   on hover. The border inset keeps it off the window edge. Don't set the
+   standard scrollbar-color/width: Chromium then ignores these rules. */
+body.view-settings #root::-webkit-scrollbar,
+body.view-app #root::-webkit-scrollbar {
+  width: 12px;
+}
+
+body.view-settings #root::-webkit-scrollbar-track,
+body.view-app #root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.view-settings #root::-webkit-scrollbar-thumb,
+body.view-app #root::-webkit-scrollbar-thumb {
+  background-color: rgba(127, 127, 127, 0.35);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 6px;
+  min-height: 40px;
+}
+
+body.view-settings #root::-webkit-scrollbar-thumb:hover,
+body.view-app #root::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(127, 127, 127, 0.6);
+}
+
+body.view-settings #root::-webkit-scrollbar-thumb:active,
+body.view-app #root::-webkit-scrollbar-thumb:active {
+  background-color: var(--accent);
 }
 
 .settings {
@@ -608,6 +714,10 @@ body.view-settings #root {
   writing-mode: vertical-rl;
 }
 
+.preview-fill.bar-left .preview-bar {
+  writing-mode: sideways-lr;
+}
+
 .preview-bar {
   flex: 0 0 26px;
   height: 26px;
@@ -671,10 +781,34 @@ body.view-settings #root {
   gap: 12px;
 }
 
+.row:not(.has-hint) .row-label {
+  white-space: nowrap;
+}
+
+.row.has-hint {
+  padding: 4px 0;
+}
+
+.row-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.65;
+}
+
 .row-control {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+/* Long option text would otherwise push a select past the window edge. */
+.row-control select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 .row-control output {
@@ -703,7 +837,7 @@ body.view-settings #root {
 }
 
 .settings input[type='color'] {
-  width: 44px;
+  width: 40px;
   height: 26px;
   padding: 0 2px;
   border: 1px solid rgba(127, 127, 127, 0.45);
@@ -712,7 +846,7 @@ body.view-settings #root {
 }
 
 .settings input[type='range'] {
-  width: 140px;
+  width: 120px;
   accent-color: var(--accent);
 }
 

@@ -1,6 +1,6 @@
 import { Menu, Tray, app, shell } from 'electron'
 import { dirname } from 'node:path'
-import type { PanelManager } from './panelManager'
+import { canStartWithOs, type PanelManager } from './panelManager'
 import { createTrayIcon } from './trayIcon'
 
 export function createTray(pm: PanelManager): Tray {
@@ -30,12 +30,10 @@ export function createTray(pm: PanelManager): Tray {
           label: 'Start with Windows',
           type: 'checkbox',
           checked: config.startWithWindows,
-          enabled: process.platform === 'win32' || process.platform === 'darwin',
-          click: (item) => {
-            app.setLoginItemSettings({ openAtLogin: item.checked })
-            pm.store.update((c) => (c.startWithWindows = item.checked))
-          }
+          enabled: canStartWithOs(),
+          click: (item) => pm.updateAppSettings({ startWithWindows: item.checked })
         },
+        { label: 'Settings…', click: () => void pm.openAppSettings() },
         {
           label: 'Open config folder',
           click: () => void shell.openPath(dirname(pm.store.filePath))

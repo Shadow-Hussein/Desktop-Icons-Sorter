@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
 import type {
+  CollapseAlign,
   CollapseDirection,
   HeaderShape,
   IconSize,
@@ -8,6 +8,7 @@ import type {
 } from '../../../shared/types'
 import { hexToRgba } from '../color'
 import { usePanelState } from '../usePanelState'
+import { Row } from './Row'
 
 const PRESETS: { name: string; bg: string; bar: string; text: string }[] = [
   { name: 'Charcoal', bg: '#1e1e1e', bar: '#000000', text: '#ffffff' },
@@ -17,15 +18,6 @@ const PRESETS: { name: string; bg: string; bar: string; text: string }[] = [
   { name: 'Ember', bg: '#7a2e12', bar: '#4d1c0a', text: '#ffffff' },
   { name: 'Frost', bg: '#f2f4f7', bar: '#d5dae1', text: '#111111' }
 ]
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="row">
-      <span className="row-label">{label}</span>
-      <span className="row-control">{children}</span>
-    </label>
-  )
-}
 
 function Opacity({ value, onChange }: { value: number; onChange(v: number): void }) {
   return (
@@ -47,6 +39,7 @@ export function SettingsView() {
   if (!state) return null
   const p = state.panel
   const update = (patch: PanelPatch): void => void window.sorter.updatePanel(patch)
+  const sideways = p.collapseDirection === 'left' || p.collapseDirection === 'right'
 
   return (
     <div className="settings">
@@ -109,44 +102,38 @@ export function SettingsView() {
       </section>
 
       <section>
-        <h2>Background</h2>
-        <Row label="Color">
-          <input
-            type="color"
-            value={p.bgColor}
-            onChange={(e) => update({ bgColor: e.target.value })}
-          />
-        </Row>
-        <Row label="Opacity">
-          <Opacity value={p.bgOpacity} onChange={(v) => update({ bgOpacity: v })} />
-        </Row>
-      </section>
-
-      <section>
-        <h2>Title bar</h2>
-        <Row label="Shape">
+        <h2>Look</h2>
+        <Row label="Title bar shape">
           <select
             value={p.headerShape}
             onChange={(e) => update({ headerShape: e.target.value as HeaderShape })}
           >
             <option value="default">Default</option>
-            <option value="phone">Phone (shows apps when collapsed)</option>
-            <option value="folder">Phone folder (2 × 2 square when collapsed)</option>
+            <option value="phone">Dock (row of apps when collapsed)</option>
+            <option value="folder">Tile (2 × 2 square of apps when collapsed)</option>
             <option value="pill">Pill</option>
             <option value="minimal">Minimal (no bar until collapsed)</option>
           </select>
         </Row>
-        <Row label="Color">
+        <Row label="Background">
           <input
             type="color"
+            aria-label="Background color"
+            value={p.bgColor}
+            onChange={(e) => update({ bgColor: e.target.value })}
+          />
+          <Opacity value={p.bgOpacity} onChange={(v) => update({ bgOpacity: v })} />
+        </Row>
+        <Row label="Title bar">
+          <input
+            type="color"
+            aria-label="Title bar color"
             value={p.titleBarColor}
             onChange={(e) => update({ titleBarColor: e.target.value })}
           />
-        </Row>
-        <Row label="Opacity">
           <Opacity value={p.titleBarOpacity} onChange={(v) => update({ titleBarOpacity: v })} />
         </Row>
-        <Row label="Text color">
+        <Row label="Title text">
           <input
             type="color"
             value={p.titleTextColor}
@@ -174,6 +161,10 @@ export function SettingsView() {
             <option value="modified">Date modified</option>
           </select>
         </Row>
+      </section>
+
+      <section>
+        <h2>Collapsing</h2>
         <Row label="Collapsed">
           <input
             type="checkbox"
@@ -191,6 +182,43 @@ export function SettingsView() {
             <option value="left">Left (title bar on the left)</option>
             <option value="right">Right (title bar on the right)</option>
           </select>
+        </Row>
+        {p.headerShape === 'folder' && (
+          <Row label="Tile position">
+            <select
+              value={p.collapseAlign}
+              onChange={(e) => update({ collapseAlign: e.target.value as CollapseAlign })}
+            >
+              {sideways ? (
+                <>
+                  <option value="start">Top</option>
+                  <option value="center">Center</option>
+                  <option value="end">Bottom</option>
+                </>
+              ) : (
+                <>
+                  <option value="start">Left</option>
+                  <option value="center">Center</option>
+                  <option value="end">Right</option>
+                </>
+              )}
+            </select>
+          </Row>
+        )}
+        <Row
+          label="Stack with other panels"
+          hint={
+            state.stacking
+              ? 'Moves the panels stacked against it as it collapses, and moves with them.'
+              : 'Stacking is off for all panels in app settings.'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={p.stackable}
+            disabled={!state.stacking}
+            onChange={(e) => update({ stackable: e.target.checked })}
+          />
         </Row>
       </section>
 

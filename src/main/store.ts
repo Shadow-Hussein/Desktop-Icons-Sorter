@@ -1,7 +1,7 @@
 import { mkdirSync, promises as fsp, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import type { AppConfig, Bounds, PanelConfig, PanelPatch } from '../shared/types'
+import type { AppConfig, AppSettings, Bounds, PanelConfig, PanelPatch } from '../shared/types'
 import { MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH } from '../shared/types'
 import {
   array,
@@ -28,6 +28,7 @@ const iconSize = oneOf(['small', 'medium', 'large'])
 const sortBy = oneOf(['name', 'type', 'modified'])
 const collapseDirection = oneOf(['up', 'down', 'left', 'right'])
 const headerShape = oneOf(['default', 'phone', 'folder', 'pill', 'minimal'])
+const collapseAlign = oneOf(['start', 'center', 'end'])
 const title = string({ max: 200 })
 
 export const panelSchema = object<PanelConfig>({
@@ -37,6 +38,8 @@ export const panelSchema = object<PanelConfig>({
   collapsed: withDefault(boolean(), false),
   collapseDirection: withDefault(collapseDirection, 'up'),
   headerShape: withDefault(headerShape, 'default'),
+  collapseAlign: withDefault(collapseAlign, 'start'),
+  stackable: withDefault(boolean(), true),
   bgColor: withDefault(hexColor, '#1e1e1e'),
   bgOpacity: withDefault(opacity, 0.45),
   titleBarColor: withDefault(hexColor, '#000000'),
@@ -61,18 +64,37 @@ export const panelPatchSchema = strictPartial<PanelPatch>({
   iconSize,
   sortBy,
   collapseDirection,
-  headerShape
+  headerShape,
+  collapseAlign,
+  stackable: boolean()
 })
 
 export const configSchema = object<AppConfig>({
   version: withDefault(oneOf([1]), 1),
   panels: withDefault(array(panelSchema), []),
   startWithWindows: withDefault(boolean(), false),
-  locked: withDefault(boolean(), false)
+  locked: withDefault(boolean(), false),
+  snapping: withDefault(boolean(), true),
+  stacking: withDefault(boolean(), true)
+})
+
+/** App settings the app settings window may change; no defaults, as for panel patches. */
+export const appSettingsPatchSchema = strictPartial<AppSettings>({
+  startWithWindows: boolean(),
+  locked: boolean(),
+  snapping: boolean(),
+  stacking: boolean()
 })
 
 export function defaultConfig(): AppConfig {
-  return { version: 1, panels: [], startWithWindows: false, locked: false }
+  return {
+    version: 1,
+    panels: [],
+    startWithWindows: false,
+    locked: false,
+    snapping: true,
+    stacking: true
+  }
 }
 
 /**

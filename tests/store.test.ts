@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  appSettingsPatchSchema,
   ConfigStore,
   createPanel,
   folderNameFromTitle,
@@ -23,6 +24,8 @@ describe('parseConfig', () => {
       collapsed: false,
       collapseDirection: 'up',
       headerShape: 'default',
+      collapseAlign: 'start',
+      stackable: true,
       bgColor: '#1e1e1e',
       bgOpacity: 0.45,
       iconSize: 'medium',
@@ -43,9 +46,29 @@ describe('parseConfig', () => {
     expect(config.panels.map((p) => p.id)).toEqual(['ok'])
   })
 
+  it('turns snapping and stacking on by default', () => {
+    const { config } = parseConfig({ panels: [] })
+    expect(config).toMatchObject({ snapping: true, stacking: true })
+  })
+
   it('falls back to defaults for garbage', () => {
     expect(parseConfig('nope').config.panels).toEqual([])
     expect(parseConfig(null).recovered).toBe(true)
+  })
+})
+
+describe('appSettingsPatchSchema', () => {
+  it('accepts app settings without filling in the rest', () => {
+    expect(appSettingsPatchSchema.parse({ snapping: false })).toEqual({ snapping: false })
+    expect(appSettingsPatchSchema.parse({ stacking: true, locked: true })).toEqual({
+      stacking: true,
+      locked: true
+    })
+  })
+
+  it('rejects other fields and wrong types', () => {
+    expect(() => appSettingsPatchSchema.parse({ panels: [] })).toThrow()
+    expect(() => appSettingsPatchSchema.parse({ snapping: 'yes' })).toThrow()
   })
 })
 
@@ -63,6 +86,8 @@ describe('panelPatchSchema', () => {
     expect(() => panelPatchSchema.parse({ bgOpacity: 1.5 })).toThrow()
     expect(() => panelPatchSchema.parse({ collapseDirection: 'sideways' })).toThrow()
     expect(() => panelPatchSchema.parse({ headerShape: 'round' })).toThrow()
+    expect(() => panelPatchSchema.parse({ collapseAlign: 'middle' })).toThrow()
+    expect(() => panelPatchSchema.parse({ stackable: 'no' })).toThrow()
   })
 
   it('accepts a collapse direction', () => {
@@ -74,6 +99,7 @@ describe('panelPatchSchema', () => {
   it('accepts a header shape', () => {
     expect(panelPatchSchema.parse({ headerShape: 'phone' })).toEqual({ headerShape: 'phone' })
     expect(panelPatchSchema.parse({ headerShape: 'folder' })).toEqual({ headerShape: 'folder' })
+    expect(panelPatchSchema.parse({ collapseAlign: 'center' })).toEqual({ collapseAlign: 'center' })
   })
 })
 

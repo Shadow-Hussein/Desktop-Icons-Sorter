@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import type { PanelItem, ResizeEdge } from '../../../shared/types'
-import { collapsedBarSize } from '../../../shared/types'
+import { COLLAPSE_ANIMATION_MS, collapsedBarSize } from '../../../shared/types'
 import { hexToRgba } from '../color'
 import { usePanelState } from '../usePanelState'
 import { AppPeek } from './AppPeek'
@@ -68,13 +68,14 @@ export function Panel() {
 
   return (
     <div
-      className={`panel bar-${panel.collapseDirection} shape-${shape}${
-        panel.collapsed ? ' collapsed' : ''
-      }${dropActive ? ' drop-active' : ''}`}
+      className={`panel bar-${panel.collapseDirection} shape-${shape} align-${
+        panel.collapseAlign
+      }${panel.collapsed ? ' collapsed' : ''}${dropActive ? ' drop-active' : ''}`}
       style={
         {
           background: clear ? 'transparent' : hexToRgba(panel.bgColor, panel.bgOpacity),
-          '--collapsed-bar': `${collapsedBarSize(shape)}px`
+          '--collapsed-bar': `${collapsedBarSize(shape)}px`,
+          '--collapse-ms': `${COLLAPSE_ANIMATION_MS}ms`
         } as CSSProperties
       }
       onDragEnter={(e) => {
