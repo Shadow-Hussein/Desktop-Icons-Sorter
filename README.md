@@ -2,6 +2,8 @@
 
 Rectangular, customizable panels on the Windows desktop for sorting your icons. It works like Stardock Fences: drop shortcuts into a panel to group them, then collapse the panel when you want a clean desktop.
 
+![Panels on the Windows desktop: Apps, Documents and Photos panels, a Dev panel collapsed to a tile, and a Tools panel collapsed to a dock](docs/screenshots/desktop.webp)
+
 Free and open source under the [MIT License](LICENSE).
 
 ## Features
@@ -28,6 +30,10 @@ Free and open source under the [MIT License](LICENSE).
   - right-click for Open file location, Rename (or F2), Move to Desktop or another panel, and Move to Recycle Bin
 - **Tray menu:** New panel, Show/Hide panels, Lock panels, Start with Windows, Settings…, Open config folder, Quit.
 - **Safe deletes.** Deleting a panel asks whether to move its items back to the Desktop. Files are never deleted.
+
+<p align="center">
+  <img src="docs/screenshots/settings.webp" width="640" alt="The panel settings window and the app settings window, next to an Apps panel, a Photos panel and a Dev panel collapsed to a tile">
+</p>
 
 ## Getting started
 
