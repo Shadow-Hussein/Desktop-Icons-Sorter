@@ -1,6 +1,6 @@
 {
   "name": "desktop-icons-sorter",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Rectangular, customizable panels on the Windows desktop for sorting your icons.",
   "main": "./out/main/index.js",
   "author": "shadow-hussein",
