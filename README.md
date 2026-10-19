@@ -7,18 +7,21 @@ Free and open source under the [MIT License](LICENSE).
 ## Features
 
 - **Panels that live on the desktop.** They sit behind normal windows, stay out of the taskbar and Alt+Tab, and stay visible on "Show desktop" (Win+D).
-- **Folder-backed.** Each panel shows a real folder (`%USERPROFILE%\DesktopSorter\<panel>` by default). Dropping a desktop icon onto a panel moves the file into that folder, so it leaves the cluttered desktop. The grouping survives restarts and Windows rearranging your icons.
-- **Customizable per panel:**
+- **Folder-backed.** Each panel shows a real folder (`%USERPROFILE%\DesktopSorter\<panel>` by default). Dropping a desktop icon onto a panel copies it into that folder, or moves it there so it leaves the cluttered desktop: choose Copy (the default) or Move in app settings. Icons dragged from one panel to another always move. The grouping survives restarts and Windows rearranging your icons.
+- **Customizable per panel**, in a settings window with one-click controls (picture tiles for the title bar shape, arrow buttons for the collapse direction, toggle switches) that follows the Windows light or dark theme:
   - title (double-click it to rename)
   - background color and transparency
   - title bar color, transparency and text color
   - title bar shape: default, dock (a collapsed panel shows a row of its apps you can click to open), tile (a collapsed panel is a square with four of its apps, at the start, middle or end of its edge), pill, or minimal (no bar until the panel collapses)
   - color presets
-  - icon size (small, medium, large) and sort order (name, type, date modified)
+  - icon size (small, medium, large) and sort order (custom, name, type, date modified)
+- **Arrange icons your way.** Drag an icon to any spot in its panel, including empty ones, and it stays there, gaps and all. Drop it on another icon and that icon and the ones right after it slide along to the next gap, like a phone's home screen. Custom order is the default; new items go after the last icon, and an item dropped in from elsewhere lands where you drop it. If a panel gets too narrow for an icon's column, the icon moves to the next free spot until the panel is wide enough again. Picking Name, Type or Date sorts the panel instead, and dragging an icon switches back to custom order.
+- **Catch new desktop items.** Turn on "Catch new desktop items" in a panel's settings and new shortcuts, downloads and files that appear on your desktop are copied (or moved, as set in app settings) into that panel. One panel catches at a time. It waits for a download to finish, and leaves alone renamed desktop items, empty new files and folders (probably still being named), and items you move to the desktop from a panel. It watches your own Desktop folder only, so shortcuts an installer puts on the shared Public Desktop (for all users) aren't caught.
 - **Collapsible.** Click the chevron or double-click an empty part of the title bar to roll the panel up to its title bar. In panel settings, choose the edge it collapses toward: up, down, left or right. The title bar sits on that edge, so a bottom bar suits panels near the taskbar and a side bar suits panels along a screen edge.
 - **Stackable.** Put panels against each other, say one under another, and collapsing the top one moves the ones below it up to fill the space; expanding it moves them back down. It works the same way for panels that collapse down, left or right. Turn it off for every panel in app settings, or leave one panel out of it in its panel settings.
 - **Move and resize** by dragging the title bar or the edges. While you drag, a panel's edges snap to screen edges and to other panels' edges, so panels line up and sit flush against each other; keep dragging to pull away. Turn snapping off in app settings, and lock all panels from the tray.
-- **App settings** (tray menu > Settings…, or App settings… in a panel's title bar menu): snapping, stacking, locking panels and starting with Windows.
+- **App settings** (tray menu > Settings…, or App settings… in a panel's title bar menu): whether panels copy or move the items added to them, snapping, stacking, locking panels and starting with Windows.
+- **Starts with Windows** after a fresh install (turn it off in app settings or the tray menu). The portable exe doesn't, since it isn't installed anywhere.
 - **Item actions:**
   - double-click to open
   - drag out to Explorer, the desktop or another panel

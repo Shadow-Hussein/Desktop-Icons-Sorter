@@ -1,7 +1,7 @@
 import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { IPC } from '../shared/types'
 import type { PanelManager } from './panelManager'
-import { appSettingsPatchSchema, panelPatchSchema } from './store'
+import { appSettingsPatchSchema, cellsSchema, dropTargetSchema, panelPatchSchema } from './store'
 import { array, oneOf, string } from './validate'
 
 const pathArg = string({ min: 1, max: 32_767 })
@@ -44,7 +44,10 @@ export function registerIpc(pm: PanelManager): void {
   handle(IPC.getIcon, (id, path) => pm.getIcon(id, pathArg.parse(path)))
   handle(IPC.getShortcutOverlay, (id) => pm.getShortcutOverlay(id))
   handle(IPC.openItem, (_id, path) => pm.openItem(pathArg.parse(path)))
-  handle(IPC.dropFiles, (id, paths) => pm.dropFiles(id, pathsArg.parse(paths)))
+  handle(IPC.dropFiles, (id, paths, at) =>
+    pm.dropFiles(id, pathsArg.parse(paths), at == null ? null : dropTargetSchema.parse(at))
+  )
+  handle(IPC.arrangeItems, (id, cells) => pm.arrangeItems(id, cellsSchema.parse(cells)))
   handle(IPC.renameItem, (_id, path, name) =>
     pm.renameItem(pathArg.parse(path), nameArg.parse(name))
   )

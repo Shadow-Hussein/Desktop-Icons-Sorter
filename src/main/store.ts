@@ -1,8 +1,16 @@
 import { mkdirSync, promises as fsp, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import type { AppConfig, AppSettings, Bounds, PanelConfig, PanelPatch } from '../shared/types'
-import { MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH } from '../shared/types'
+import type {
+  AppConfig,
+  AppSettings,
+  Bounds,
+  DropTarget,
+  PanelConfig,
+  PanelPatch,
+  PlacedItem
+} from '../shared/types'
+import { MAX_PANEL_ITEMS, MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH } from '../shared/types'
 import {
   array,
   boolean,
@@ -25,11 +33,24 @@ export const boundsSchema = object<Bounds>({
 })
 
 const iconSize = oneOf(['small', 'medium', 'large'])
-const sortBy = oneOf(['name', 'type', 'modified'])
+const sortBy = oneOf(['custom', 'name', 'type', 'modified'])
 const collapseDirection = oneOf(['up', 'down', 'left', 'right'])
 const headerShape = oneOf(['default', 'phone', 'folder', 'pill', 'minimal'])
 const collapseAlign = oneOf(['start', 'center', 'end'])
+const addMode = oneOf(['copy', 'move'])
 const title = string({ max: 200 })
+/** A file name, as Windows allows it. */
+export const fileNameSchema = string({ min: 1, max: 255 })
+export const orderSchema = array(fileNameSchema, { max: MAX_PANEL_ITEMS })
+const gridIndex = (max: number) => number({ min: 0, max, integer: true })
+export const cellsSchema = array(
+  object<PlacedItem>({ name: fileNameSchema, col: gridIndex(999), row: gridIndex(99_999) }),
+  { max: MAX_PANEL_ITEMS }
+)
+export const dropTargetSchema = object<DropTarget>({
+  cell: gridIndex(99_999_999),
+  cols: number({ min: 1, max: 1000, integer: true })
+})
 
 export const panelSchema = object<PanelConfig>({
   id: string({ min: 1 }),
@@ -47,7 +68,10 @@ export const panelSchema = object<PanelConfig>({
   titleTextColor: withDefault(hexColor, '#ffffff'),
   folderPath: string({ min: 1 }),
   iconSize: withDefault(iconSize, 'medium'),
-  sortBy: withDefault(sortBy, 'name')
+  sortBy: withDefault(sortBy, 'custom'),
+  cells: withDefault(cellsSchema, []),
+  order: withDefault(orderSchema, []),
+  catchNewItems: withDefault(boolean(), false)
 })
 
 /**
@@ -66,16 +90,18 @@ export const panelPatchSchema = strictPartial<PanelPatch>({
   collapseDirection,
   headerShape,
   collapseAlign,
-  stackable: boolean()
+  stackable: boolean(),
+  catchNewItems: boolean()
 })
 
 export const configSchema = object<AppConfig>({
-  version: withDefault(oneOf([1]), 1),
+  version: withDefault(oneOf([1, 2]), 2),
   panels: withDefault(array(panelSchema), []),
   startWithWindows: withDefault(boolean(), false),
   locked: withDefault(boolean(), false),
   snapping: withDefault(boolean(), true),
-  stacking: withDefault(boolean(), true)
+  stacking: withDefault(boolean(), true),
+  addMode: withDefault(addMode, 'copy')
 })
 
 /** App settings the app settings window may change; no defaults, as for panel patches. */
@@ -83,17 +109,19 @@ export const appSettingsPatchSchema = strictPartial<AppSettings>({
   startWithWindows: boolean(),
   locked: boolean(),
   snapping: boolean(),
-  stacking: boolean()
+  stacking: boolean(),
+  addMode
 })
 
 export function defaultConfig(): AppConfig {
   return {
-    version: 1,
+    version: 2,
     panels: [],
     startWithWindows: false,
     locked: false,
     snapping: true,
-    stacking: true
+    stacking: true,
+    addMode: 'copy'
   }
 }
 
@@ -103,7 +131,7 @@ export function defaultConfig(): AppConfig {
  */
 export function parseConfig(raw: unknown): { config: AppConfig; recovered: boolean } {
   const full = configSchema.safeParse(raw)
-  if (full.success) return { config: full.data, recovered: false }
+  if (full.success) return { config: migrateConfig(full.data), recovered: false }
 
   if (raw && typeof raw === 'object') {
     const obj = raw as Record<string, unknown>
@@ -115,9 +143,24 @@ export function parseConfig(raw: unknown): { config: AppConfig; recovered: boole
       : []
     const rest = configSchema.safeParse({ ...obj, panels: [] })
     const base = rest.success ? rest.data : defaultConfig()
-    return { config: { ...base, panels }, recovered: true }
+    return { config: migrateConfig({ ...base, panels }), recovered: true }
   }
   return { config: defaultConfig(), recovered: true }
+}
+
+/**
+ * Version 2 made custom order (drag to arrange) the default. Panels saved by
+ * version 1 sorted by name switch to it without moving an icon, since an
+ * empty custom order sorts by name. Type and date sorts are kept: custom
+ * order can't reproduce them before the folder has been listed.
+ */
+export function migrateConfig(config: AppConfig): AppConfig {
+  if (config.version === 2) return config
+  return {
+    ...config,
+    version: 2,
+    panels: config.panels.map((p) => (p.sortBy === 'name' ? { ...p, sortBy: 'custom' } : p))
+  }
 }
 
 export interface NewPanelOptions {

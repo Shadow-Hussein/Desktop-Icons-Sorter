@@ -180,9 +180,10 @@ body.view-panel #root {
   font: inherit;
   font-weight: 600;
   color: inherit;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.4);
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: 6px;
+  box-shadow: 0 0 0 3px rgba(46, 156, 240, 0.35);
   padding: 2px 6px;
   outline: none;
   user-select: text;
@@ -194,20 +195,24 @@ body.view-panel #root {
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: inherit;
   opacity: 0.75;
   cursor: pointer;
+  transition:
+    opacity 120ms,
+    background-color 120ms;
 }
 
 .tb-btn:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .tb-btn:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 /* ------------------------------------------------------- header shapes */
@@ -420,7 +425,11 @@ body.view-panel #root {
   }
 }
 
+/* Columns, row height and each icon's cell are set inline (IconGrid), which
+   mirrors this padding and gap. */
 .grid {
+  /* Icons' offsets are measured from here when they slide while arranging. */
+  position: relative;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -455,10 +464,11 @@ body.view-panel #root {
   display: flex;
   flex-direction: column;
   align-items: center;
+  align-self: start;
   gap: 4px;
   padding: 6px 2px 4px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .item:hover {
@@ -466,9 +476,27 @@ body.view-panel #root {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+/* A selected icon shows its whole name, which may reach into the row below. */
 .item.selected {
-  background: rgba(46, 156, 240, 0.32);
-  border-color: rgba(46, 156, 240, 0.7);
+  position: relative;
+  z-index: 1;
+  background: rgba(46, 156, 240, 0.3);
+  border-color: rgba(120, 190, 255, 0.65);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+/* Where a dragged icon will land. Not a drop target itself, so dragging over
+   it doesn't fire enter/leave events as it moves. */
+.drop-slot {
+  pointer-events: none;
+}
+
+.drop-slot-icon {
+  border: 2px dashed rgba(255, 255, 255, 0.6);
+  border-radius: 12px;
+  background: rgba(46, 156, 240, 0.2);
+  box-shadow: 0 0 0 3px rgba(46, 156, 240, 0.18);
+  animation: content-in 120ms ease-out;
 }
 
 .item-icon {
@@ -521,8 +549,12 @@ body.view-panel #root {
   font-size: 11.5px;
   text-align: center;
   resize: none;
+  color: #fff;
+  background: rgba(20, 24, 32, 0.88);
   border: 1px solid var(--accent);
-  border-radius: 3px;
+  border-radius: 5px;
+  box-shadow: 0 0 0 3px rgba(46, 156, 240, 0.35);
+  outline: none;
   padding: 1px 2px;
   user-select: text;
 }
@@ -598,18 +630,69 @@ body.view-panel #root {
 
 /* ------------------------------------------------------------- settings */
 
+/* Glass cards over a soft gradient. The glass is faked with translucent fills
+   rather than backdrop-filter: these windows are opaque, so a blur would only
+   blur their own background, and with software rendering it costs CPU on
+   every repaint. */
 body.view-settings,
 body.view-app {
-  background: #f6f7f9;
-  color: #1b1d21;
+  --text: #1a1c23;
+  --muted: rgba(26, 28, 35, 0.6);
+  --surface: rgba(255, 255, 255, 0.6);
+  --surface-border: rgba(255, 255, 255, 0.95);
+  --edge: rgba(20, 30, 60, 0.1);
+  --line: rgba(20, 30, 60, 0.07);
+  --field: rgba(20, 30, 60, 0.06);
+  --field-hover: rgba(20, 30, 60, 0.1);
+  --track: rgba(20, 30, 60, 0.16);
+  --btn: rgba(255, 255, 255, 0.9);
+  --btn-hover: #fff;
+  --popover: rgba(255, 255, 255, 0.98);
+  --ring-gap: #f4f6fc;
+  --art: rgba(20, 30, 60, 0.12);
+  --art-bar: rgba(20, 30, 60, 0.38);
+  --shadow: 0 1px 2px rgba(20, 30, 60, 0.06), 0 6px 18px rgba(20, 30, 60, 0.07);
+  --accent-2: #7b61ff;
+  --accent-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --accent-soft: rgba(46, 156, 240, 0.12);
+  --glow: 0 0 0 3px rgba(46, 156, 240, 0.35);
+  --danger: #e5484d;
+  --r-card: 14px;
+  --r-ctl: 10px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  background:
+    radial-gradient(120% 55% at 0% 0%, rgba(46, 156, 240, 0.18), transparent 60%),
+    radial-gradient(110% 55% at 100% 100%, rgba(123, 97, 255, 0.16), transparent 60%),
+    linear-gradient(160deg, #eef3fb, #f3effb);
+  color: var(--text);
   user-select: none;
 }
 
 @media (prefers-color-scheme: dark) {
   body.view-settings,
   body.view-app {
-    background: #1f2124;
-    color: #e8eaed;
+    --text: #eceef4;
+    --muted: rgba(236, 238, 244, 0.6);
+    --surface: rgba(255, 255, 255, 0.055);
+    --surface-border: rgba(255, 255, 255, 0.09);
+    --edge: rgba(255, 255, 255, 0.1);
+    --line: rgba(255, 255, 255, 0.07);
+    --field: rgba(255, 255, 255, 0.07);
+    --field-hover: rgba(255, 255, 255, 0.12);
+    --track: rgba(255, 255, 255, 0.18);
+    --btn: rgba(255, 255, 255, 0.1);
+    --btn-hover: rgba(255, 255, 255, 0.16);
+    --popover: #252a38;
+    --ring-gap: #1a1d2a;
+    --art: rgba(255, 255, 255, 0.1);
+    --art-bar: rgba(255, 255, 255, 0.36);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 22px rgba(0, 0, 0, 0.25);
+    --accent-soft: rgba(46, 156, 240, 0.18);
+    --glow: 0 0 0 3px rgba(46, 156, 240, 0.45);
+    background:
+      radial-gradient(120% 55% at 0% 0%, rgba(46, 156, 240, 0.2), transparent 60%),
+      radial-gradient(110% 55% at 100% 100%, rgba(123, 97, 255, 0.2), transparent 60%),
+      linear-gradient(160deg, #131827, #1b1528);
   }
 }
 
@@ -647,29 +730,39 @@ body.view-app #root::-webkit-scrollbar-thumb:hover {
 
 body.view-settings #root::-webkit-scrollbar-thumb:active,
 body.view-app #root::-webkit-scrollbar-thumb:active {
-  background-color: var(--accent);
+  background-image: var(--accent-grad);
 }
 
 .settings {
-  padding: 14px 16px 20px;
+  padding: 14px 14px 18px;
 }
 
 .settings h2 {
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 600;
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.65;
+  letter-spacing: 0.07em;
+  color: var(--muted);
 }
 
 .settings section {
-  margin-top: 14px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.settings section > h2 + input,
+.settings section > h2 + div {
+  margin-top: 6px;
 }
 
 .preview {
-  height: 64px;
-  border-radius: var(--radius);
+  height: 68px;
+  border-radius: var(--r-card);
   overflow: hidden;
   /* Checkerboard so transparency is visible. */
   background-color: #888;
@@ -684,7 +777,8 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
     0 8px,
     8px -8px,
     -8px 0;
-  border: 1px solid rgba(127, 127, 127, 0.35);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--shadow);
 }
 
 .preview-fill {
@@ -777,8 +871,12 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 30px;
+  min-height: 38px;
   gap: 12px;
+}
+
+.row + .row {
+  border-top: 1px solid var(--line);
 }
 
 .row:not(.has-hint) .row-label {
@@ -786,7 +884,7 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
 }
 
 .row.has-hint {
-  padding: 4px 0;
+  padding: 7px 0;
 }
 
 .row-hint {
@@ -794,79 +892,492 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
   margin-top: 2px;
   font-size: 11px;
   line-height: 1.35;
-  opacity: 0.65;
+  color: var(--muted);
+}
+
+/* The label wraps and the control keeps its size; otherwise a long hint
+   squeezes the control column and a switch spills out of its card. */
+.row-label {
+  min-width: 0;
 }
 
 .row-control {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 10px;
 }
 
-/* Long option text would otherwise push a select past the window edge. */
-.row-control select {
-  min-width: 0;
-  max-width: 100%;
-  text-overflow: ellipsis;
+/* Label and hint on top, the control full width under them. */
+.row.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 9px 0 10px;
+}
+
+.row.stacked .row-control {
+  display: block;
 }
 
 .row-control output {
-  width: 36px;
-  text-align: right;
+  min-width: 42px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--field);
+  font-size: 11px;
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
-.settings input.text,
-.settings select {
-  font: inherit;
-  padding: 5px 8px;
-  border-radius: 5px;
-  border: 1px solid rgba(127, 127, 127, 0.45);
-  background: transparent;
-  color: inherit;
-}
+/* ---- text field */
 
 .settings input.text {
   width: 100%;
+  font: inherit;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  background: var(--field);
+  color: inherit;
+  outline: none;
   user-select: text;
+  transition:
+    background-color 120ms,
+    border-color 120ms,
+    box-shadow 120ms;
 }
 
-.settings select option {
-  color: #111;
+.settings input.text:hover {
+  background: var(--field-hover);
 }
 
-.settings input[type='color'] {
-  width: 40px;
-  height: 26px;
-  padding: 0 2px;
-  border: 1px solid rgba(127, 127, 127, 0.45);
-  border-radius: 5px;
-  background: transparent;
+.settings input.text:focus {
+  border-color: var(--accent);
+  background: var(--btn);
+  box-shadow: var(--glow);
 }
+
+/* ---- dropdown: base-select lets Chromium style the open list too */
+
+.settings select,
+.settings ::picker(select) {
+  appearance: base-select;
+}
+
+.settings select {
+  /* Long option text would otherwise push a select past the window edge. */
+  min-width: 0;
+  max-width: 100%;
+  width: 150px;
+  font: inherit;
+  padding: 6px 10px 6px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  background: var(--field);
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 120ms,
+    border-color 120ms,
+    box-shadow 120ms;
+}
+
+.settings select:hover {
+  background: var(--field-hover);
+}
+
+.settings select:focus-visible,
+.settings select:open {
+  border-color: var(--accent);
+  box-shadow: var(--glow);
+}
+
+.settings select::picker-icon {
+  color: var(--muted);
+  transition: rotate 160ms var(--ease);
+}
+
+.settings select:open::picker-icon {
+  rotate: 180deg;
+}
+
+.settings ::picker(select) {
+  margin-top: 6px;
+  padding: 4px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--popover);
+  color: var(--text);
+  box-shadow: 0 12px 32px rgba(10, 20, 40, 0.22);
+}
+
+.settings option {
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+}
+
+.settings option:hover,
+.settings option:focus-visible {
+  background: var(--field-hover);
+}
+
+.settings option:checked {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---- toggle switch */
+
+.settings input[type='checkbox'] {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--track);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 160ms,
+    box-shadow 120ms;
+}
+
+.settings input[type='checkbox']::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 180ms var(--ease);
+}
+
+.settings input[type='checkbox']:checked {
+  background: var(--accent-grad);
+}
+
+.settings input[type='checkbox']:checked::before {
+  transform: translateX(16px);
+}
+
+.settings input[type='checkbox']:focus-visible {
+  box-shadow: var(--glow);
+}
+
+.settings input[type='checkbox']:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- slider: --f (0 to 1) is set inline, as Chromium has no progress
+   pseudo-element. The fill ends under the thumb's center. */
 
 .settings input[type='range'] {
+  appearance: none;
   width: 120px;
-  accent-color: var(--accent);
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
 }
+
+.settings input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background:
+    var(--accent-grad) 0 0 / calc(8px + (100% - 16px) * var(--f, 0.5)) 100% no-repeat,
+    var(--track);
+}
+
+.settings input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(0, 0, 0, 0.05);
+  transition:
+    box-shadow 120ms,
+    transform 120ms var(--ease);
+}
+
+.settings input[type='range']:hover::-webkit-slider-thumb {
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    0 0 0 4px rgba(46, 156, 240, 0.2);
+}
+
+.settings input[type='range']:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.settings input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    var(--glow);
+}
+
+/* ---- color swatch */
+
+.settings input[type='color'] {
+  appearance: none;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--ring-gap),
+    0 0 0 3px var(--edge);
+  transition: box-shadow 120ms;
+}
+
+.settings input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.settings input[type='color']::-webkit-color-swatch {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 50%;
+}
+
+.settings input[type='color']:hover,
+.settings input[type='color']:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--ring-gap),
+    0 0 0 4px var(--accent);
+}
+
+/* ---- segmented control and picture tiles: native radios, hidden but
+   focusable, so arrow keys move the choice. */
+
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-ctl);
+  background: var(--field);
+}
+
+.seg label,
+.tiles label {
+  position: relative;
+}
+
+.seg input,
+.tiles input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.seg-face {
+  cursor: pointer;
+  transition:
+    background-color 140ms,
+    color 140ms,
+    box-shadow 140ms;
+}
+
+.seg .seg-face {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.seg .seg-face svg {
+  display: block;
+}
+
+.seg label:hover .seg-face {
+  color: var(--text);
+  background: var(--field);
+}
+
+.seg input:checked + .seg-face {
+  color: #fff;
+  background: var(--accent-grad);
+  box-shadow: 0 2px 8px rgba(90, 110, 255, 0.35);
+}
+
+.seg input:focus-visible + .seg-face,
+.tiles input:focus-visible + .seg-face {
+  box-shadow: var(--glow);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.tiles .seg-face {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 5px 5px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.tiles label:hover .seg-face {
+  color: var(--text);
+  background: var(--field);
+}
+
+.tiles input:checked + .seg-face {
+  color: var(--text);
+  font-weight: 600;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* A tiny drawing of each title bar shape. */
+.art {
+  position: relative;
+  display: block;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--art);
+  overflow: hidden;
+}
+
+.art-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: var(--art-bar);
+}
+
+.art-apps {
+  position: absolute;
+  top: 12px;
+  left: 5px;
+  display: flex;
+  gap: 3px;
+}
+
+.art-apps i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--art-bar);
+}
+
+.art.shape-phone {
+  height: 24px;
+  margin-top: 8px;
+  border-radius: 8px;
+}
+
+.art.shape-folder {
+  width: 32px;
+  margin: 0 auto;
+  border-radius: 8px;
+}
+
+.art.shape-folder .art-bar {
+  height: 7px;
+}
+
+.art.shape-folder .art-apps {
+  top: 10px;
+  left: 50%;
+  width: 17px;
+  flex-wrap: wrap;
+  translate: -50% 0;
+}
+
+.art.shape-pill .art-bar {
+  top: 3px;
+  left: 4px;
+  right: 4px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.art.shape-minimal .art-bar {
+  height: 0;
+  border-bottom: 1px dashed var(--art-bar);
+  background: none;
+}
+
+.tiles input:checked + .seg-face .art {
+  --art-bar: var(--accent);
+}
+
+/* ---- presets */
 
 .presets {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 
 .preset {
-  width: 32px;
-  height: 24px;
-  border-radius: 5px;
-  border: 1px solid rgba(127, 127, 127, 0.5);
-  border-top-width: 6px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--bar) 50%, var(--bg) 50%);
+  box-shadow:
+    0 0 0 1px var(--edge),
+    0 1px 3px rgba(0, 0, 0, 0.15);
   cursor: pointer;
+  outline: none;
+  transition:
+    transform 140ms var(--ease),
+    box-shadow 140ms;
 }
 
 .preset:hover {
-  outline: 2px solid var(--accent);
+  transform: translateY(-1px) scale(1.08);
 }
+
+.preset:focus-visible,
+.preset.active {
+  box-shadow:
+    0 0 0 2px var(--ring-gap),
+    0 0 0 4px var(--accent);
+}
+
+.preset svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
+}
+
+/* ---- folder */
 
 .folder {
   display: flex;
@@ -877,33 +1388,80 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
 .folder code {
   flex: 1;
   min-width: 0;
+  padding: 7px 10px;
+  border-radius: var(--r-ctl);
+  background: var(--field);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: 'Cascadia Mono', Consolas, monospace;
   font-size: 11px;
-  opacity: 0.8;
+  color: var(--muted);
 }
 
+/* ---- buttons */
+
 .settings button:not(.preset) {
+  flex: none;
   font: inherit;
-  padding: 5px 12px;
-  border-radius: 5px;
-  border: 1px solid rgba(127, 127, 127, 0.5);
-  background: rgba(127, 127, 127, 0.12);
+  font-weight: 600;
+  padding: 7px 14px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-ctl);
+  background: var(--btn);
   color: inherit;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
   cursor: pointer;
+  outline: none;
+  transition:
+    background-color 120ms,
+    color 120ms,
+    border-color 120ms,
+    box-shadow 120ms,
+    transform 120ms var(--ease);
 }
 
 .settings button:not(.preset):hover {
-  background: rgba(127, 127, 127, 0.22);
+  background: var(--btn-hover);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
 }
 
-.danger {
-  padding-top: 12px;
-  border-top: 1px solid rgba(127, 127, 127, 0.25);
+.settings button:not(.preset):active {
+  transform: scale(0.98);
+}
+
+.settings button:not(.preset):focus-visible {
+  box-shadow: var(--glow);
+}
+
+.settings section.danger {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
 }
 
 .settings button.delete {
-  color: #d93025;
-  border-color: rgba(217, 48, 37, 0.5);
+  width: 100%;
+  padding: 9px 14px;
+  color: var(--danger);
+  border-color: rgba(229, 72, 77, 0.35);
+  background: rgba(229, 72, 77, 0.1);
+  box-shadow: none;
+}
+
+.settings button.delete:hover {
+  color: #fff;
+  border-color: transparent;
+  background: var(--danger);
+  box-shadow: 0 4px 14px rgba(229, 72, 77, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings *,
+  .settings *::before,
+  .settings *::-webkit-slider-thumb {
+    transition: none;
+  }
 }

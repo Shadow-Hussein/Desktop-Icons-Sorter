@@ -1,7 +1,8 @@
 import { app, type BrowserWindow } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { registerIpc } from './ipc'
-import { PanelManager } from './panelManager'
+import { PanelManager, setStartWithOs } from './panelManager'
 import { ConfigStore } from './store'
 import { createTray } from './tray'
 
@@ -29,8 +30,20 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => undefined)
 
   app.whenReady().then(async () => {
-    const store = new ConfigStore(join(app.getPath('userData'), 'config.json'))
+    const configPath = join(app.getPath('userData'), 'config.json')
+    const firstRun = !existsSync(configPath)
+    const store = new ConfigStore(configPath)
     store.load()
+    // A fresh install starts with Windows. Not the portable exe, which isn't
+    // installed anywhere, and not a dev run, which would add electron.exe.
+    if (
+      firstRun &&
+      app.isPackaged &&
+      process.platform === 'win32' &&
+      !process.env.PORTABLE_EXECUTABLE_FILE
+    ) {
+      store.update((c) => (c.startWithWindows = true))
+    }
 
     const loadRenderer = async (
       win: BrowserWindow,
@@ -57,7 +70,7 @@ if (!app.requestSingleInstanceLock()) {
 
     // Keep the OS login item in sync with the saved preference.
     if (process.platform === 'win32' && app.isPackaged) {
-      app.setLoginItemSettings({ openAtLogin: store.get().startWithWindows })
+      setStartWithOs(store.get().startWithWindows)
     }
 
     await manager.start()

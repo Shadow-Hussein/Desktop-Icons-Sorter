@@ -11,15 +11,17 @@ import {
   type WebPreferences
 } from 'electron'
 import { existsSync, promises as fsp } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type {
   AppSettings,
   Bounds,
   CollapseDirection,
+  DropTarget,
   IconSize,
   PanelConfig,
   PanelPatch,
   PanelState,
+  PlacedItem,
   ResizeEdge,
   SortBy
 } from '../shared/types'
@@ -28,10 +30,25 @@ import {
   collapsedBarSize,
   collapsedLength,
   ICON_PIXELS,
-  IPC
+  IPC,
+  MAX_PANEL_ITEMS
 } from '../shared/types'
 import { attachToDesktop, needsReattach, sendToBottom } from './desktopLayer'
-import { isInside, listItems, moveInto, renameItem, samePath } from './folderService'
+import { DesktopCatcher } from './desktopCatcher'
+import {
+  copyInto,
+  isInside,
+  listItems,
+  moveInto,
+  placeInOrder,
+  renameInOrder,
+  renameItem,
+  samePath,
+  pruneCells,
+  renameInCells,
+  syncOrder
+} from './folderService'
+import { layoutGrid, placeAt } from '../shared/grid'
 import {
   clampToWorkAreas,
   collapsedBounds,
@@ -111,6 +128,15 @@ export function canStartWithOs(): boolean {
   return process.platform === 'win32' || process.platform === 'darwin'
 }
 
+/**
+ * The portable build runs from a temp folder it unpacks into, which is gone
+ * after it quits, so its login item has to point at the portable exe itself.
+ */
+export function setStartWithOs(open: boolean): void {
+  const portable = process.env.PORTABLE_EXECUTABLE_FILE
+  app.setLoginItemSettings({ openAtLogin: open, ...(portable ? { path: portable } : {}) })
+}
+
 export class PanelManager {
   private readonly panels = new Map<string, PanelRuntime>()
   /** webContents id → panel id, for both panel and settings windows. */
@@ -118,6 +144,8 @@ export class PanelManager {
   private hidden = false
   private reattachTimer: NodeJS.Timeout | null = null
   private appWin: { win: BrowserWindow; webContentsId: number } | null = null
+  /** Moves new desktop items into the panel that catches them; null when none does. */
+  private catcher: DesktopCatcher | null = null
 
   constructor(private readonly opts: PanelManagerOptions) {}
 
@@ -130,6 +158,7 @@ export class PanelManager {
   async start(): Promise<void> {
     if (this.store.get().panels.length === 0) this.addPanel('Apps')
     for (const p of this.store.get().panels) await this.openPanel(p)
+    this.syncCatcher()
 
     screen.on('display-removed', () => this.clampAll())
     screen.on('display-metrics-changed', () => this.clampAll())
@@ -143,6 +172,7 @@ export class PanelManager {
   stop(): void {
     if (this.reattachTimer) clearInterval(this.reattachTimer)
     for (const rt of this.panels.values()) rt.watcher.close()
+    this.catcher?.stop()
   }
 
   panelIdForSender(webContentsId: number): string | undefined {
@@ -158,6 +188,12 @@ export class PanelManager {
       nodeIntegration: false,
       spellcheck: false
     }
+  }
+
+  /** Packaged, windows take the app exe's icon. Run from source they would
+      take electron.exe's, so point them at the build icon instead. */
+  private windowIcon(): string | undefined {
+    return app.isPackaged ? undefined : join(app.getAppPath(), 'build', 'icon.ico')
   }
 
   private windowBounds(p: PanelConfig): Bounds {
@@ -270,8 +306,8 @@ export class PanelManager {
 
   getState(panelId: string): PanelState | undefined {
     const panel = this.store.getPanel(panelId)
-    const { locked, stacking } = this.store.get()
-    return panel && { panel, locked, stacking }
+    const { locked, stacking, addMode } = this.store.get()
+    return panel && { panel, locked, stacking, addMode }
   }
 
   private pushState(panelId: string): void {
@@ -307,6 +343,46 @@ export class PanelManager {
       this.applyBounds(rt.win, updated)
     }
     if (patch.sortBy !== undefined && patch.sortBy !== before.sortBy) void this.pushItems(panelId)
+    if (patch.catchNewItems !== undefined) {
+      // Only one panel catches new desktop items.
+      if (patch.catchNewItems) {
+        const others = this.store.get().panels.filter((o) => o.id !== panelId && o.catchNewItems)
+        this.store.update((c) => {
+          for (const o of c.panels) if (o.id !== panelId) o.catchNewItems = false
+        })
+        for (const o of others) this.pushState(o.id)
+      }
+      this.syncCatcher()
+    }
+  }
+
+  /** Watches the desktop only while a panel catches new items. */
+  private syncCatcher(): void {
+    const catching = this.store.get().panels.some((p) => p.catchNewItems)
+    if (catching && !this.catcher) {
+      this.catcher = new DesktopCatcher(this.opts.desktopDir, (path) => this.catchItem(path))
+      this.catcher.start()
+    } else if (!catching && this.catcher) {
+      this.catcher.stop()
+      this.catcher = null
+    }
+  }
+
+  /** Copies or moves (see AppConfig.addMode) a new desktop item to the end of the catching panel. */
+  private async catchItem(path: string): Promise<boolean> {
+    const p = this.store.get().panels.find((x) => x.catchNewItems)
+    // A panel folder the user put on the desktop is not a new item.
+    if (!p || this.store.get().panels.some((x) => isInside(x.folderPath, path))) return true
+    try {
+      const add = this.store.get().addMode === 'copy' ? copyInto : moveInto
+      const dest = await add(path, p.folderPath)
+      this.store.updatePanel(p.id, (d) => (d.order = placeInOrder(d.order, [basename(dest)], null)))
+      return true
+    } catch (err) {
+      // Locked, or on a path that needs admin rights; the catcher may retry.
+      console.warn('[catcher] could not add', path, (err as Error).message)
+      return false
+    }
   }
 
   toggleCollapsed(panelId: string): void {
@@ -531,7 +607,22 @@ export class PanelManager {
 
   async listItems(panelId: string) {
     const p = this.store.getPanel(panelId)
-    return p ? listItems(p.folderPath, p.sortBy) : []
+    if (!p) return []
+    const items = await listItems(p.folderPath, p.sortBy, p.order, p.cells)
+    if (p.sortBy === 'custom') {
+      // Remember the order new items arrived in and forget removed ones, so
+      // later arrivals queue up behind them instead of sorting by name.
+      const names = items.map((i) => i.fileName)
+      const order = syncOrder(p.order, names)
+      const cells = pruneCells(p.cells, names)
+      if (order || cells) {
+        this.store.updatePanel(panelId, (d) => {
+          if (order) d.order = order
+          if (cells) d.cells = cells
+        })
+      }
+    }
+    return items
   }
 
   private async pushItems(panelId: string): Promise<void> {
@@ -573,8 +664,12 @@ export class PanelManager {
     if (err) dialog.showErrorBox('Could not open item', err)
   }
 
-  /** Files dropped from Explorer or the desktop: move them into the panel folder. */
-  async dropFiles(panelId: string, paths: string[]): Promise<void> {
+  /**
+   * Files dropped from Explorer, the desktop or another panel: copy or move
+   * them (see AppConfig.addMode) into the panel folder, into the cell `at` or
+   * after the last item. Items from another panel always move.
+   */
+  async dropFiles(panelId: string, paths: string[], at: DropTarget | null = null): Promise<void> {
     const p = this.store.getPanel(panelId)
     if (!p) return
     const movable = paths.filter(
@@ -584,7 +679,48 @@ export class PanelManager {
         !samePath(x, this.opts.desktopDir) &&
         !this.store.get().panels.some((o) => samePath(x, o.folderPath))
     )
-    await this.moveAll(movable, p.folderPath)
+    const copy = this.store.get().addMode === 'copy'
+    const moved = await this.moveAll(movable, p.folderPath, (src) =>
+      copy && !this.isManagedPath(src) ? 'copy' : 'move'
+    )
+    // Without a spot to go to, items that were already here stay where they are.
+    const placed = at ? moved : moved.filter((m) => !movable.some((src) => samePath(src, m)))
+    if (!placed.length) return
+    const names = placed.map((m) => basename(m))
+    let cells: PlacedItem[] | null = null
+    if (at && p.sortBy === 'custom') {
+      // Lay the grid out as the panel shows it, then put the new items in.
+      const shown = (await listItems(p.folderPath, 'custom', p.order, p.cells))
+        .map((i) => i.fileName)
+        .filter((n) => !names.includes(n))
+      cells = placeAt(layoutGrid(shown, p.cells, at.cols), names, at.cell, at.cols).slice(
+        0,
+        MAX_PANEL_ITEMS
+      )
+    }
+    this.store.updatePanel(panelId, (d) => {
+      d.order = placeInOrder(d.order, names, null)
+      if (cells) d.cells = cells
+    })
+    if (cells) this.pushState(panelId)
+    // Items already in this folder don't change it, so nothing else refreshes.
+    await this.pushItems(panelId)
+  }
+
+  /** Saves where the user put every item; arranging switches to custom order. */
+  async arrangeItems(panelId: string, cells: PlacedItem[]): Promise<void> {
+    if (!this.store.getPanel(panelId)) return
+    const seen = new Set<string>()
+    const unique = cells.filter((p) => {
+      const k = p.name.toLowerCase()
+      return !seen.has(k) && !!seen.add(k)
+    })
+    this.store.updatePanel(panelId, (d) => {
+      d.cells = unique
+      d.sortBy = 'custom'
+    })
+    this.pushState(panelId)
+    await this.pushItems(panelId)
   }
 
   async moveItemTo(path: string, target: { panelId: string } | 'desktop'): Promise<void> {
@@ -594,28 +730,52 @@ export class PanelManager {
     if (dest) await this.moveAll([path], dest)
   }
 
-  private async moveAll(paths: string[], destDir: string): Promise<void> {
+  /** Moves (or copies, where `how` says so) items; returns their new paths. */
+  private async moveAll(
+    paths: string[],
+    destDir: string,
+    how: (src: string) => 'copy' | 'move' = () => 'move'
+  ): Promise<string[]> {
     const errors: string[] = []
+    const moved: string[] = []
+    let anyMove = false
+    const toDesktop = samePath(destDir, this.opts.desktopDir)
     for (const src of paths) {
       try {
-        await moveInto(src, destDir)
+        const copy = how(src) === 'copy'
+        anyMove ||= !copy
+        const dest = await (copy ? copyInto : moveInto)(src, destDir)
+        moved.push(dest)
+        // Don't let the catching panel take back what the user sent to the desktop.
+        if (toDesktop) this.catcher?.ignore(basename(dest))
       } catch (err) {
         errors.push(`${src}\n  ${(err as Error).message}`)
       }
     }
     if (errors.length) {
       dialog.showErrorBox(
-        'Some items could not be moved',
+        anyMove ? 'Some items could not be moved' : 'Some items could not be copied',
         errors.join('\n\n') +
-          '\n\nItems on the shared Public Desktop need administrator rights to move.'
+          (anyMove
+            ? '\n\nItems on the shared Public Desktop need administrator rights to move.'
+            : '')
       )
     }
+    return moved
   }
 
   async renameItem(path: string, newName: string): Promise<void> {
     if (!this.isManagedPath(path)) return
     try {
-      await renameItem(path, newName)
+      const dest = await renameItem(path, newName)
+      // Keep the renamed item where the user arranged it.
+      const p = this.store.get().panels.find((x) => samePath(x.folderPath, dirname(path)))
+      if (p) {
+        this.store.updatePanel(p.id, (d) => {
+          d.order = renameInOrder(d.order, basename(path), basename(dest))
+          d.cells = renameInCells(d.cells, basename(path), basename(dest))
+        })
+      }
     } catch (err) {
       dialog.showErrorBox('Could not rename item', (err as Error).message)
     }
@@ -624,6 +784,8 @@ export class PanelManager {
   startDrag(panelId: string, path: string): void {
     const rt = this.panels.get(panelId)
     if (!rt || !this.isManagedPath(path)) return
+    // A drop on the desktop copies the item there; that copy isn't new.
+    this.catcher?.ignore(basename(path), 120_000)
     void getIconDataUrl(path, 32).then((url) => {
       if (rt.win.isDestroyed()) return
       // startDrag requires a non-empty icon.
@@ -677,6 +839,7 @@ export class PanelManager {
       ['large', 'Large icons']
     ]
     const sorts: [SortBy, string][] = [
+      ['custom', 'Custom (drag to arrange)'],
       ['name', 'Name'],
       ['type', 'Type'],
       ['modified', 'Date modified']
@@ -818,6 +981,7 @@ export class PanelManager {
     this.panels.delete(panelId)
     rt.settingsWin?.destroy()
     rt.win.destroy()
+    this.syncCatcher()
   }
 
   async chooseFolder(panelId: string): Promise<void> {
@@ -864,6 +1028,7 @@ export class PanelManager {
       maximizable: false,
       fullscreenable: false,
       autoHideMenuBar: true,
+      icon: this.windowIcon(),
       title: `Panel settings: ${p.title}`,
       show: false,
       webPreferences: this.webPreferences()
@@ -895,18 +1060,24 @@ export class PanelManager {
   // ------------------------------------------------------------ app settings
 
   getAppSettings(): AppSettings {
-    const { startWithWindows, locked, snapping, stacking } = this.store.get()
-    return { startWithWindows, locked, snapping, stacking }
+    const { startWithWindows, locked, snapping, stacking, addMode } = this.store.get()
+    return { startWithWindows, locked, snapping, stacking, addMode }
   }
 
   updateAppSettings(patch: Partial<AppSettings>): void {
     if (patch.startWithWindows !== undefined && canStartWithOs()) {
-      app.setLoginItemSettings({ openAtLogin: patch.startWithWindows })
+      setStartWithOs(patch.startWithWindows)
     }
     const before = this.store.get()
     const after = this.store.update((c) => Object.assign(c, patch))
     // Panels and their settings windows show these.
-    if (after.locked !== before.locked || after.stacking !== before.stacking) this.pushStateAll()
+    if (
+      after.locked !== before.locked ||
+      after.stacking !== before.stacking ||
+      after.addMode !== before.addMode
+    ) {
+      this.pushStateAll()
+    }
   }
 
   isAppSettingsSender(webContentsId: number): boolean {
@@ -922,13 +1093,14 @@ export class PanelManager {
     const win = new BrowserWindow({
       // Content size, tall enough for every row without scrolling.
       width: 360,
-      height: 320,
+      height: 550,
       useContentSize: true,
       resizable: false,
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
       autoHideMenuBar: true,
+      icon: this.windowIcon(),
       title: 'Desktop Icons Sorter',
       show: false,
       webPreferences: this.webPreferences()

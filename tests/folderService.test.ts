@@ -3,15 +3,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  copyInto,
   displayNameFor,
   isInside,
   listItems,
   moveInto,
+  placeInOrder,
+  pruneCells,
+  renameInCells,
+  renameInOrder,
   renameItem,
   sortItems,
+  syncOrder,
   uniqueDestination
 } from '../src/main/folderService'
 import type { PanelItem } from '../src/shared/types'
+import { MAX_PANEL_ITEMS } from '../src/shared/types'
 
 let root: string
 beforeEach(() => {
@@ -87,6 +94,94 @@ describe('sortItems', () => {
     const n = [item('file10', 0), item('file2', 0)]
     expect(sortItems(n, 'name').map((i) => i.fileName)).toEqual(['file2', 'file10'])
   })
+  it('follows the custom order, then the rest by name', () => {
+    expect(sortItems(items, 'custom', ['m.exe', 'Z.TXT']).map((i) => i.fileName)).toEqual([
+      'm.exe',
+      'z.txt',
+      'a.lnk',
+      'dir'
+    ])
+  })
+  it('reads spots row by row before the custom order', () => {
+    const cells = [
+      { name: 'dir', col: 2, row: 1 },
+      { name: 'a.lnk', col: 3, row: 0 }
+    ]
+    expect(sortItems(items, 'custom', ['z.txt'], cells).map((i) => i.fileName)).toEqual([
+      'a.lnk',
+      'dir',
+      'z.txt',
+      'm.exe'
+    ])
+  })
+  it('sorts by name when there is no custom order yet', () => {
+    expect(sortItems(items, 'custom').map((i) => i.fileName)).toEqual(
+      sortItems(items, 'name').map((i) => i.fileName)
+    )
+  })
+})
+
+describe('syncOrder', () => {
+  it('drops names that are gone and appends new ones', () => {
+    expect(syncOrder(['b', 'gone', 'a'], ['b', 'a', 'new'])).toEqual(['b', 'a', 'new'])
+  })
+  it('returns null when nothing changed', () => {
+    expect(syncOrder(['b', 'a'], ['b', 'a'])).toBeNull()
+    expect(syncOrder(['b', 'a'], ['a', 'b'])).toBeNull()
+  })
+})
+
+describe('order cap', () => {
+  const many = Array.from({ length: MAX_PANEL_ITEMS + 5 }, (_, i) => `f${i}`)
+
+  it('keeps at most MAX_PANEL_ITEMS names, and is stable once full', () => {
+    const order = syncOrder([], many)!
+    expect(order).toHaveLength(MAX_PANEL_ITEMS)
+    expect(syncOrder(order, many)).toBeNull()
+  })
+
+  it('drops the oldest names when placing past the cap', () => {
+    const order = placeInOrder(many.slice(0, MAX_PANEL_ITEMS), ['new'], null)
+    expect(order).toHaveLength(MAX_PANEL_ITEMS)
+    expect(order.at(-1)).toBe('new')
+    expect(order[0]).toBe('f1')
+  })
+})
+
+describe('placeInOrder', () => {
+  it('moves names before another one', () => {
+    expect(placeInOrder(['a', 'b', 'c', 'd'], ['d'], 'b')).toEqual(['a', 'd', 'b', 'c'])
+    expect(placeInOrder(['a', 'b', 'c'], ['a'], 'c')).toEqual(['b', 'a', 'c'])
+  })
+  it('adds new names at the end without a target, or when the target is unknown', () => {
+    expect(placeInOrder(['a', 'b'], ['x', 'y'], null)).toEqual(['a', 'b', 'x', 'y'])
+    expect(placeInOrder(['a', 'b'], ['x'], 'nope')).toEqual(['a', 'b', 'x'])
+  })
+})
+
+describe('pruneCells', () => {
+  it('forgets spots of items that are gone', () => {
+    const cells = [
+      { name: 'a', col: 0, row: 0 },
+      { name: 'gone', col: 1, row: 0 }
+    ]
+    expect(pruneCells(cells, ['A'])).toEqual([{ name: 'a', col: 0, row: 0 }])
+    expect(pruneCells(cells, ['a', 'gone'])).toBeNull()
+  })
+})
+
+describe('renameInCells', () => {
+  it('keeps the renamed item in its spot', () => {
+    expect(renameInCells([{ name: 'b', col: 2, row: 3 }], 'b', 'bee')).toEqual([
+      { name: 'bee', col: 2, row: 3 }
+    ])
+  })
+})
+
+describe('renameInOrder', () => {
+  it('keeps the renamed item in place', () => {
+    expect(renameInOrder(['a', 'b', 'c'], 'b', 'bee')).toEqual(['a', 'bee', 'c'])
+  })
 })
 
 describe('uniqueDestination', () => {
@@ -95,6 +190,40 @@ describe('uniqueDestination', () => {
     touch(join(root, 'app (2).lnk'))
     expect(await uniqueDestination(root, 'app.lnk')).toBe(join(root, 'app (3).lnk'))
     expect(await uniqueDestination(root, 'new.lnk')).toBe(join(root, 'new.lnk'))
+  })
+})
+
+describe('copyInto', () => {
+  it('copies a file, keeps the original and renames on collision', async () => {
+    const desk = join(root, 'Desktop')
+    const panel = join(root, 'Panel')
+    mkdirSync(desk)
+    mkdirSync(panel)
+    touch(join(desk, 'Game.lnk'), 'new')
+    touch(join(panel, 'Game.lnk'), 'old')
+
+    const dest = await copyInto(join(desk, 'Game.lnk'), panel)
+    expect(dest).toBe(join(panel, 'Game (2).lnk'))
+    expect(await fsp.readFile(join(desk, 'Game.lnk'), 'utf8')).toBe('new')
+    expect(await fsp.readFile(dest, 'utf8')).toBe('new')
+  })
+
+  it('copies folders with their contents', async () => {
+    mkdirSync(join(root, 'f'))
+    touch(join(root, 'f', 'inner.txt'), 'hi')
+    const dest = await copyInto(join(root, 'f'), join(root, 'panel'))
+    expect(await fsp.readFile(join(dest, 'inner.txt'), 'utf8')).toBe('hi')
+    expect(existsSync(join(root, 'f', 'inner.txt'))).toBe(true)
+  })
+
+  it('is a no-op when already in the destination', async () => {
+    touch(join(root, 'a.txt'))
+    expect(await copyInto(join(root, 'a.txt'), root)).toBe(join(root, 'a.txt'))
+  })
+
+  it('refuses to copy a folder into itself', async () => {
+    mkdirSync(join(root, 'f'))
+    await expect(copyInto(join(root, 'f'), join(root, 'f', 'sub'))).rejects.toThrow(/itself/)
   })
 })
 

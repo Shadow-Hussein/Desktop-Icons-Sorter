@@ -10,6 +10,7 @@ import {
   panelPatchSchema,
   parseConfig
 } from '../src/main/store'
+import type { AppConfig } from '../src/shared/types'
 
 const bounds = { x: 10, y: 20, width: 300, height: 200 }
 
@@ -19,7 +20,7 @@ describe('parseConfig', () => {
       panels: [{ id: 'a', title: 'Games', bounds, folderPath: 'C:\\x' }]
     })
     expect(recovered).toBe(false)
-    expect(config.version).toBe(1)
+    expect(config.version).toBe(2)
     expect(config.panels[0]).toMatchObject({
       collapsed: false,
       collapseDirection: 'up',
@@ -29,8 +30,53 @@ describe('parseConfig', () => {
       bgColor: '#1e1e1e',
       bgOpacity: 0.45,
       iconSize: 'medium',
-      sortBy: 'name'
+      sortBy: 'custom',
+      cells: [],
+      order: [],
+      catchNewItems: false
     })
+  })
+
+  it('switches name-sorted panels from version 1 to custom order, keeping other sorts', () => {
+    const panel = { title: 'x', bounds, folderPath: 'C:\\x' }
+    const { config } = parseConfig({
+      version: 1,
+      panels: [
+        { ...panel, id: 'a', sortBy: 'name' },
+        { ...panel, id: 'b', sortBy: 'type' }
+      ]
+    })
+    expect(config.version).toBe(2)
+    expect(config.panels.map((p) => p.sortBy)).toEqual(['custom', 'type'])
+  })
+
+  it('leaves a version 2 config as it is', () => {
+    const raw: Partial<AppConfig> = {
+      version: 2,
+      panels: [createPanel({ title: 'x', bounds, folderPath: 'C:\\x' })]
+    }
+    raw.panels![0].sortBy = 'name'
+    expect(parseConfig(raw).config.panels[0].sortBy).toBe('name')
+  })
+
+  it('rejects bad spots', () => {
+    const panel = { id: 'a', title: 'x', bounds, folderPath: 'C:\\x' }
+    const ok = [{ name: 'a.lnk', col: 2, row: 5 }]
+    expect(parseConfig({ panels: [{ ...panel, cells: ok }] }).config.panels[0].cells).toEqual(ok)
+    for (const bad of [
+      [{ name: 'a', col: -1, row: 0 }],
+      [{ name: 'a', col: 1.5, row: 0 }],
+      [{ name: '', col: 0, row: 0 }],
+      [{ name: 'a', col: 0 }]
+    ]) {
+      expect(parseConfig({ panels: [{ ...panel, cells: bad }] }).config.panels).toEqual([])
+    }
+  })
+
+  it('rejects a bad custom order', () => {
+    const panel = { id: 'a', title: 'x', bounds, folderPath: 'C:\\x' }
+    expect(parseConfig({ panels: [{ ...panel, order: [''] }] }).config.panels).toEqual([])
+    expect(parseConfig({ panels: [{ ...panel, order: 'a' }] }).config.panels).toEqual([])
   })
 
   it('drops only the invalid panels', () => {
@@ -51,6 +97,14 @@ describe('parseConfig', () => {
     expect(config).toMatchObject({ snapping: true, stacking: true })
   })
 
+  it('copies added items by default and rejects an unknown mode', () => {
+    expect(parseConfig({ panels: [] }).config.addMode).toBe('copy')
+    expect(parseConfig({ panels: [], addMode: 'move' }).config.addMode).toBe('move')
+    const bad = parseConfig({ panels: [], addMode: 'link' })
+    expect(bad.recovered).toBe(true)
+    expect(bad.config.addMode).toBe('copy')
+  })
+
   it('falls back to defaults for garbage', () => {
     expect(parseConfig('nope').config.panels).toEqual([])
     expect(parseConfig(null).recovered).toBe(true)
@@ -69,6 +123,11 @@ describe('appSettingsPatchSchema', () => {
   it('rejects other fields and wrong types', () => {
     expect(() => appSettingsPatchSchema.parse({ panels: [] })).toThrow()
     expect(() => appSettingsPatchSchema.parse({ snapping: 'yes' })).toThrow()
+    expect(() => appSettingsPatchSchema.parse({ addMode: 'link' })).toThrow()
+  })
+
+  it('accepts the add mode', () => {
+    expect(appSettingsPatchSchema.parse({ addMode: 'move' })).toEqual({ addMode: 'move' })
   })
 })
 
@@ -88,6 +147,14 @@ describe('panelPatchSchema', () => {
     expect(() => panelPatchSchema.parse({ headerShape: 'round' })).toThrow()
     expect(() => panelPatchSchema.parse({ collapseAlign: 'middle' })).toThrow()
     expect(() => panelPatchSchema.parse({ stackable: 'no' })).toThrow()
+    expect(() => panelPatchSchema.parse({ catchNewItems: 1 })).toThrow()
+    expect(() => panelPatchSchema.parse({ order: ['a'] })).toThrow()
+    expect(() => panelPatchSchema.parse({ sortBy: 'random' })).toThrow()
+  })
+
+  it('accepts custom order and catching new items', () => {
+    expect(panelPatchSchema.parse({ sortBy: 'custom' })).toEqual({ sortBy: 'custom' })
+    expect(panelPatchSchema.parse({ catchNewItems: true })).toEqual({ catchNewItems: true })
   })
 
   it('accepts a collapse direction', () => {
@@ -141,7 +208,7 @@ describe('ConfigStore', () => {
     const config = new ConfigStore(file).load()
     expect(config.panels).toEqual([])
     expect(readFileSync(join(dir, 'config.bad.json'), 'utf8')).toBe('{ not json')
-    expect(JSON.parse(readFileSync(file, 'utf8')).version).toBe(1)
+    expect(JSON.parse(readFileSync(file, 'utf8')).version).toBe(2)
   })
 
   it('notifies listeners and does not mutate previous snapshots', () => {

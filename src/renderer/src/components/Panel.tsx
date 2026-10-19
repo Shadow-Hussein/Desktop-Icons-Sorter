@@ -57,7 +57,7 @@ export function Panel() {
   }, [])
 
   if (!state) return null
-  const { panel, locked } = state
+  const { panel, locked, addMode } = state
   // A collapsed panel only resizes along its title bar.
   const sideways = panel.collapseDirection === 'left' || panel.collapseDirection === 'right'
   const shape = panel.headerShape
@@ -91,11 +91,12 @@ export function Panel() {
         if (!hasFiles(e)) return
         e.preventDefault()
         // Drags from our own panels (webContents.startDrag) don't allow
-        // 'move', and asking for it cancels the drop. The item is moved
-        // either way; this only picks the cursor.
+        // 'move', and asking for it cancels the drop. The main process copies
+        // or moves either way; this only picks the cursor.
         const allowed = e.dataTransfer.effectAllowed
         e.dataTransfer.dropEffect =
-          allowed === 'all' || allowed === 'uninitialized' || /move/i.test(allowed)
+          addMode === 'move' &&
+          (allowed === 'all' || allowed === 'uninitialized' || /move/i.test(allowed))
             ? 'move'
             : 'copy'
       }}
@@ -103,7 +104,17 @@ export function Panel() {
     >
       <TitleBar panel={panel} locked={locked} />
       {!panel.collapsed && (
-        <IconGrid items={items} iconSize={panel.iconSize} textColor={panel.titleTextColor} />
+        <IconGrid
+          items={items}
+          iconSize={panel.iconSize}
+          textColor={panel.titleTextColor}
+          cells={panel.cells}
+          sortBy={panel.sortBy}
+          onDropHandled={() => {
+            dragDepth.current = 0
+            setDropActive(false)
+          }}
+        />
       )}
       {panel.collapsed && (shape === 'phone' || shape === 'folder') && (
         <AppPeek

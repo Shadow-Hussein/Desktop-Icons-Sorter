@@ -1,6 +1,7 @@
 import { promises as fsp } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve, isAbsolute } from 'node:path'
-import type { PanelItem, SortBy } from '../shared/types'
+import type { PanelItem, PlacedItem, SortBy } from '../shared/types'
+import { MAX_PANEL_ITEMS } from '../shared/types'
 
 /** Extensions Explorer hides on the desktop even with "show extensions" on. */
 const HIDDEN_EXTENSIONS = new Set(['.lnk', '.url', '.pif'])
@@ -33,11 +34,33 @@ export function isInside(child: string, parent: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
-export function sortItems(items: PanelItem[], sortBy: SortBy): PanelItem[] {
+/** Key for matching file names the way the file system does. */
+const nameKey = (name: string): string => (caseInsensitive ? name.toLowerCase() : name)
+
+/**
+ * Sorts items. 'custom' reads the spots in `cells` row by row, then follows
+ * `order` (file names) for items without a spot, then names.
+ */
+export function sortItems(
+  items: PanelItem[],
+  sortBy: SortBy,
+  order: string[] = [],
+  cells: PlacedItem[] = []
+): PanelItem[] {
   const byName = (a: PanelItem, b: PanelItem): number =>
     a.displayName.localeCompare(b.displayName, undefined, { numeric: true, sensitivity: 'base' })
   const sorted = [...items]
   switch (sortBy) {
+    case 'custom': {
+      const spots = [...cells].sort((a, b) => a.row - b.row || a.col - b.col)
+      const rank = new Map(spots.map((p, i) => [nameKey(p.name), i]))
+      order.forEach((name, i) => {
+        if (!rank.has(nameKey(name))) rank.set(nameKey(name), spots.length + i)
+      })
+      const at = (i: PanelItem): number => rank.get(nameKey(i.fileName)) ?? Infinity
+      sorted.sort((a, b) => at(a) - at(b) || byName(a, b))
+      break
+    }
     case 'type':
       sorted.sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
@@ -55,7 +78,57 @@ export function sortItems(items: PanelItem[], sortBy: SortBy): PanelItem[] {
   return sorted
 }
 
-export async function listItems(folder: string, sortBy: SortBy): Promise<PanelItem[]> {
+/**
+ * The custom order for a folder now holding `names` (in display order): drops
+ * names that are gone and appends new ones. Returns null when nothing changed,
+ * so callers only save real changes.
+ */
+export function syncOrder(order: string[], names: string[]): string[] | null {
+  const present = new Set(names.map(nameKey))
+  const kept = order.filter((n) => present.has(nameKey(n)))
+  const known = new Set(kept.map(nameKey))
+  const added = names.filter((n) => !known.has(nameKey(n)))
+  // Past the cap, the newest items go unlisted and sort by name after the rest.
+  const next = [...kept, ...added].slice(0, MAX_PANEL_ITEMS)
+  if (kept.length === order.length && next.length === order.length) return null
+  return next
+}
+
+/**
+ * Moves `names` to just before `before` in `order` (or to the end when
+ * `before` is null or not in it), adding any that aren't there yet.
+ */
+export function placeInOrder(order: string[], names: string[], before: string | null): string[] {
+  const moving = new Set(names.map(nameKey))
+  const rest = order.filter((n) => !moving.has(nameKey(n)))
+  const at = before === null ? -1 : rest.findIndex((n) => nameKey(n) === nameKey(before))
+  const next = at < 0 ? [...rest, ...names] : [...rest.slice(0, at), ...names, ...rest.slice(at)]
+  return next.length > MAX_PANEL_ITEMS ? next.slice(-MAX_PANEL_ITEMS) : next
+}
+
+/** Forgets the spots of items that are gone; null when none are. */
+export function pruneCells(cells: PlacedItem[], names: string[]): PlacedItem[] | null {
+  const present = new Set(names.map(nameKey))
+  const kept = cells.filter((p) => present.has(nameKey(p.name)))
+  return kept.length === cells.length ? null : kept
+}
+
+/** Moves a renamed item's spot to its new name. */
+export function renameInCells(cells: PlacedItem[], from: string, to: string): PlacedItem[] {
+  return cells.map((p) => (nameKey(p.name) === nameKey(from) ? { ...p, name: to } : p))
+}
+
+/** Replaces a renamed item's name in `order`, keeping its place. */
+export function renameInOrder(order: string[], from: string, to: string): string[] {
+  return order.map((n) => (nameKey(n) === nameKey(from) ? to : n))
+}
+
+export async function listItems(
+  folder: string,
+  sortBy: SortBy,
+  order: string[] = [],
+  cells: PlacedItem[] = []
+): Promise<PanelItem[]> {
   let entries
   try {
     entries = await fsp.readdir(folder, { withFileTypes: true })
@@ -86,7 +159,9 @@ export async function listItems(folder: string, sortBy: SortBy): Promise<PanelIt
   )
   return sortItems(
     items.filter((i): i is PanelItem => i !== null),
-    sortBy
+    sortBy,
+    order,
+    cells
   )
 }
 
@@ -128,6 +203,19 @@ export async function moveInto(src: string, destDir: string): Promise<string> {
     await fsp.cp(src, dest, { recursive: true, errorOnExist: true, force: false })
     await fsp.rm(src, { recursive: true, force: true })
   }
+  return dest
+}
+
+/**
+ * Copy a file or folder into `destDir`, renaming on collision. The original
+ * stays where it is. Returns the new path (or `src` when it's already there).
+ */
+export async function copyInto(src: string, destDir: string): Promise<string> {
+  if (samePath(dirname(src), destDir)) return src
+  if (isInside(destDir, src)) throw new Error('Cannot copy a folder into itself.')
+  await fsp.mkdir(destDir, { recursive: true })
+  const dest = await uniqueDestination(destDir, basename(src))
+  await fsp.cp(src, dest, { recursive: true, errorOnExist: true, force: false })
   return dest
 }
 

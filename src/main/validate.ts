@@ -53,9 +53,12 @@ export function string(
 }
 
 /** Finite numbers only (no NaN or Infinity). */
-export function number(opts: { min?: number; max?: number } = {}): Schema<number> {
+export function number(
+  opts: { min?: number; max?: number; integer?: boolean } = {}
+): Schema<number> {
   return schema((v, path) => {
     if (typeof v !== 'number' || !Number.isFinite(v)) fail(path, 'expected a finite number')
+    if (opts.integer && !Number.isInteger(v)) fail(path, 'expected a whole number')
     if (opts.min !== undefined && v < opts.min) fail(path, `less than ${opts.min}`)
     if (opts.max !== undefined && v > opts.max) fail(path, `greater than ${opts.max}`)
     return v

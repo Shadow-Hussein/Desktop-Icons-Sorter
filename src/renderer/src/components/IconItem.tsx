@@ -8,10 +8,14 @@ interface Props {
   /** Shortcut-arrow overlay drawn over the icon, as Explorer does for .lnk/.url. */
   overlay: string | null
   width: number
+  /** The grid cell the icon sits in (1-based, as CSS grid counts). */
+  cell: { gridColumn: number; gridRow: number }
   textColor: string
   selected: boolean
   renaming: boolean
   onSelect(additive: boolean): void
+  /** Called as the icon starts being dragged out (to arrange it, or move it elsewhere). */
+  onDragStart(): void
   /** New name, or null when the rename was cancelled. */
   onRenameDone(name: string | null): void
 }
@@ -31,7 +35,7 @@ export function useIcon(path: string, modifiedMs: number, size: IconSize): strin
 }
 
 export function IconItem(props: Props) {
-  const { item, iconPx, iconSize, overlay, width, textColor, selected, renaming } = props
+  const { item, iconPx, iconSize, overlay, width, cell, textColor, selected, renaming } = props
   const icon = useIcon(item.path, item.modifiedMs, iconSize)
   const done = useRef(false)
 
@@ -49,7 +53,8 @@ export function IconItem(props: Props) {
   return (
     <div
       className={`item${selected ? ' selected' : ''}`}
-      style={{ width }}
+      data-key={item.path}
+      style={{ width, ...cell }}
       title={item.fileName}
       draggable={!renaming}
       onMouseDown={(e) => {
@@ -64,6 +69,7 @@ export function IconItem(props: Props) {
         // Hand the drag to the OS as a real file drag so Explorer, the
         // desktop and other panels can all receive it.
         e.preventDefault()
+        props.onDragStart()
         window.sorter.startDrag(item.path)
       }}
     >

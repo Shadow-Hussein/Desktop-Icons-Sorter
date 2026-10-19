@@ -1,9 +1,26 @@
 export type IconSize = 'small' | 'medium' | 'large'
-export type SortBy = 'name' | 'type' | 'modified'
+/** 'custom' keeps the order the user arranged by dragging (PanelConfig.order). */
+export type SortBy = 'custom' | 'name' | 'type' | 'modified'
 export type CollapseDirection = 'up' | 'down' | 'left' | 'right'
 export type HeaderShape = 'default' | 'phone' | 'folder' | 'pill' | 'minimal'
 export type CollapseAlign = 'start' | 'center' | 'end'
+/** How a panel takes in items from outside: copies them, or moves them out of where they were. */
+export type AddMode = 'copy' | 'move'
 export type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+/** An item the user put in a spot of a panel's icon grid, counted from the top left. */
+export interface PlacedItem {
+  /** File name. */
+  name: string
+  col: number
+  row: number
+}
+
+/** Where a drop from outside lands: a cell (in reading order) of a grid `cols` wide. */
+export interface DropTarget {
+  cell: number
+  cols: number
+}
 
 export interface Bounds {
   x: number
@@ -46,10 +63,20 @@ export interface PanelConfig {
   folderPath: string
   iconSize: IconSize
   sortBy: SortBy
+  /**
+   * Where the user put items in custom order (sortBy 'custom'), gaps and all.
+   * Items without a spot follow the last occupied one, in `order`.
+   */
+  cells: PlacedItem[]
+  /** File names in the order they arrived, for items without a spot in `cells`. */
+  order: string[]
+  /** New items that appear on the user's Desktop move into this panel. At most one panel has it. */
+  catchNewItems: boolean
 }
 
 export interface AppConfig {
-  version: 1
+  /** 1: before custom order existed (see migrateConfig in store.ts). */
+  version: 1 | 2
   panels: PanelConfig[]
   startWithWindows: boolean
   /** When locked, panels cannot be moved or resized. */
@@ -62,10 +89,18 @@ export interface AppConfig {
    * them back.
    */
   stacking: boolean
+  /**
+   * Whether items dropped on a panel or caught from the desktop are copied
+   * into its folder or moved there. Items from another panel always move.
+   */
+  addMode: AddMode
 }
 
 /** App-wide settings, shown in the app settings window. */
-export type AppSettings = Pick<AppConfig, 'startWithWindows' | 'locked' | 'snapping' | 'stacking'>
+export type AppSettings = Pick<
+  AppConfig,
+  'startWithWindows' | 'locked' | 'snapping' | 'stacking' | 'addMode'
+>
 
 /** Fields of a panel the renderer is allowed to change directly. */
 export type PanelPatch = Partial<
@@ -83,6 +118,7 @@ export type PanelPatch = Partial<
     | 'headerShape'
     | 'collapseAlign'
     | 'stackable'
+    | 'catchNewItems'
   >
 >
 
@@ -103,6 +139,8 @@ export interface PanelState {
   locked: boolean
   /** Stacking is on app-wide (AppConfig.stacking). */
   stacking: boolean
+  /** How the panel takes in dropped items (AppConfig.addMode). */
+  addMode: AddMode
 }
 
 export const TITLE_BAR_HEIGHT = 30
@@ -114,6 +152,8 @@ export const PHONE_PEEK_SIZE = 48
 export const FOLDER_CARD_SIZE = 122
 export const MIN_PANEL_WIDTH = 140
 export const MIN_PANEL_HEIGHT = 90
+/** Most names a panel's saved order or spots keep, so config.json stays small and valid. */
+export const MAX_PANEL_ITEMS = 10_000
 
 export const ICON_PIXELS: Record<IconSize, number> = {
   small: 32,
@@ -150,6 +190,7 @@ export const IPC = {
   getShortcutOverlay: 'items:get-shortcut-overlay',
   openItem: 'items:open',
   dropFiles: 'items:drop-files',
+  arrangeItems: 'items:arrange',
   renameItem: 'items:rename',
   itemMenu: 'items:menu',
   beginItemRename: 'items:begin-rename',
@@ -190,8 +231,13 @@ export interface SorterApi {
   /** The shortcut-arrow overlay at this panel's icon size (null off Windows). */
   getShortcutOverlay(): Promise<string | null>
   openItem(path: string): Promise<void>
-  /** Moves files (from Explorer, the desktop or another panel) into this panel's folder. */
-  dropFiles(paths: string[]): Promise<void>
+  /**
+   * Copies or moves files (from Explorer, the desktop or another panel) into
+   * this panel's folder, into the cell `at` (or after the last item).
+   */
+  dropFiles(paths: string[], at?: DropTarget | null): Promise<void>
+  /** Saves where the user put every item and switches to custom order. */
+  arrangeItems(cells: PlacedItem[]): Promise<void>
   renameItem(path: string, newName: string): Promise<void>
   showItemMenu(path: string): void
   showBackgroundMenu(): void
