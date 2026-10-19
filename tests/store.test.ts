@@ -25,6 +25,7 @@ describe('parseConfig', () => {
       collapsed: false,
       collapseDirection: 'up',
       headerShape: 'default',
+      titleBarStyle: 'standard',
       collapseAlign: 'start',
       stackable: true,
       bgColor: '#1e1e1e',
@@ -57,6 +58,30 @@ describe('parseConfig', () => {
     }
     raw.panels![0].sortBy = 'name'
     expect(parseConfig(raw).config.panels[0].sortBy).toBe('name')
+  })
+
+  it('turns the old pill and minimal shapes into title bar styles on the default shape', () => {
+    const panel = { title: 'x', bounds, folderPath: 'C:\\x' }
+    const { config, recovered } = parseConfig({
+      version: 2,
+      panels: [
+        { ...panel, id: 'a', headerShape: 'pill' },
+        { ...panel, id: 'b', headerShape: 'minimal' },
+        { ...panel, id: 'c', headerShape: 'phone', titleBarStyle: 'soft' }
+      ]
+    })
+    expect(recovered).toBe(false)
+    expect(config.panels.map((p) => [p.headerShape, p.titleBarStyle])).toEqual([
+      ['default', 'pill'],
+      ['default', 'minimal'],
+      ['phone', 'soft']
+    ])
+  })
+
+  it('drops a panel with an unknown shape or title bar style', () => {
+    const panel = { id: 'a', title: 'x', bounds, folderPath: 'C:\\x' }
+    expect(parseConfig({ panels: [{ ...panel, headerShape: 'round' }] }).config.panels).toEqual([])
+    expect(parseConfig({ panels: [{ ...panel, titleBarStyle: 'glow' }] }).config.panels).toEqual([])
   })
 
   it('rejects bad spots', () => {
@@ -145,6 +170,10 @@ describe('panelPatchSchema', () => {
     expect(() => panelPatchSchema.parse({ bgOpacity: 1.5 })).toThrow()
     expect(() => panelPatchSchema.parse({ collapseDirection: 'sideways' })).toThrow()
     expect(() => panelPatchSchema.parse({ headerShape: 'round' })).toThrow()
+    // Pill and minimal are title bar styles now, not shapes.
+    expect(() => panelPatchSchema.parse({ headerShape: 'pill' })).toThrow()
+    expect(() => panelPatchSchema.parse({ headerShape: 'minimal' })).toThrow()
+    expect(() => panelPatchSchema.parse({ titleBarStyle: 'default' })).toThrow()
     expect(() => panelPatchSchema.parse({ collapseAlign: 'middle' })).toThrow()
     expect(() => panelPatchSchema.parse({ stackable: 'no' })).toThrow()
     expect(() => panelPatchSchema.parse({ catchNewItems: 1 })).toThrow()
@@ -167,6 +196,12 @@ describe('panelPatchSchema', () => {
     expect(panelPatchSchema.parse({ headerShape: 'phone' })).toEqual({ headerShape: 'phone' })
     expect(panelPatchSchema.parse({ headerShape: 'folder' })).toEqual({ headerShape: 'folder' })
     expect(panelPatchSchema.parse({ collapseAlign: 'center' })).toEqual({ collapseAlign: 'center' })
+  })
+
+  it('accepts each title bar style', () => {
+    for (const titleBarStyle of ['standard', 'pill', 'minimal', 'soft']) {
+      expect(panelPatchSchema.parse({ titleBarStyle })).toEqual({ titleBarStyle })
+    }
   })
 })
 

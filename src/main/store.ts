@@ -19,7 +19,8 @@ import {
   oneOf,
   strictPartial,
   string,
-  withDefault
+  withDefault,
+  type Schema
 } from './validate'
 
 const hexColor = string({ pattern: /^#[0-9a-fA-F]{6}$/ })
@@ -35,7 +36,8 @@ export const boundsSchema = object<Bounds>({
 const iconSize = oneOf(['small', 'medium', 'large'])
 const sortBy = oneOf(['custom', 'name', 'type', 'modified'])
 const collapseDirection = oneOf(['up', 'down', 'left', 'right'])
-const headerShape = oneOf(['default', 'phone', 'folder', 'pill', 'minimal'])
+const headerShape = oneOf(['default', 'phone', 'folder'])
+const titleBarStyle = oneOf(['standard', 'pill', 'minimal', 'soft'])
 const collapseAlign = oneOf(['start', 'center', 'end'])
 const addMode = oneOf(['copy', 'move'])
 const title = string({ max: 200 })
@@ -52,13 +54,14 @@ export const dropTargetSchema = object<DropTarget>({
   cols: number({ min: 1, max: 1000, integer: true })
 })
 
-export const panelSchema = object<PanelConfig>({
+const panelFields = object<PanelConfig>({
   id: string({ min: 1 }),
   title,
   bounds: boundsSchema,
   collapsed: withDefault(boolean(), false),
   collapseDirection: withDefault(collapseDirection, 'up'),
   headerShape: withDefault(headerShape, 'default'),
+  titleBarStyle: withDefault(titleBarStyle, 'standard'),
   collapseAlign: withDefault(collapseAlign, 'start'),
   stackable: withDefault(boolean(), true),
   bgColor: withDefault(hexColor, '#1e1e1e'),
@@ -75,6 +78,25 @@ export const panelSchema = object<PanelConfig>({
 })
 
 /**
+ * Pill and minimal used to be title bar shapes of their own. Now they are
+ * title bar styles that work with any shape, so a panel saved with either
+ * becomes the default shape in that style, and looks the same.
+ */
+export function upgradePanel(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null) return raw
+  const p = raw as Record<string, unknown>
+  if (p.headerShape === 'pill' || p.headerShape === 'minimal') {
+    return { ...p, headerShape: 'default', titleBarStyle: p.headerShape }
+  }
+  return p
+}
+
+export const panelSchema: Schema<PanelConfig> = {
+  parse: (v, path) => panelFields.parse(upgradePanel(v), path),
+  safeParse: (v) => panelFields.safeParse(upgradePanel(v))
+}
+
+/**
  * Fields a renderer may change. Deliberately built without defaults: a
  * partial schema with defaults would fill in (and so reset) unsent fields.
  */
@@ -89,6 +111,7 @@ export const panelPatchSchema = strictPartial<PanelPatch>({
   sortBy,
   collapseDirection,
   headerShape,
+  titleBarStyle,
   collapseAlign,
   stackable: boolean(),
   catchNewItems: boolean()

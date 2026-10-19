@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { PanelConfig } from '../../../shared/types'
 import { hexToRgba } from '../color'
 
@@ -44,16 +44,23 @@ export function TitleBar({ panel, locked }: Props) {
 
   const isControl = (t: EventTarget): boolean =>
     t instanceof Element && !!t.closest('button, input')
-  // A minimal header has no bar of its own until the panel collapses into it.
-  const bare = panel.headerShape === 'minimal' && !panel.collapsed
+  const fill = hexToRgba(panel.titleBarColor, panel.titleBarOpacity)
+  // A minimal bar has no fill, collapsed or not; a collapsed panel still
+  // shows its own background. A soft bar paints its color on a faded layer of
+  // its own (--bar-fill, see styles.css).
+  const bare = panel.titleBarStyle === 'minimal'
+  const soft = panel.titleBarStyle === 'soft'
 
   return (
     <div
       className="titlebar"
-      style={{
-        background: bare ? 'transparent' : hexToRgba(panel.titleBarColor, panel.titleBarOpacity),
-        color: panel.titleTextColor
-      }}
+      style={
+        {
+          background: bare || soft ? 'transparent' : fill,
+          '--bar-fill': soft ? fill : undefined,
+          color: panel.titleTextColor
+        } as CSSProperties
+      }
       onPointerDown={(e) => {
         if (e.button !== 0 || locked || isControl(e.target)) return
         pointer.current = { x: e.screenX, y: e.screenY, moving: false }

@@ -337,12 +337,12 @@ body.view-panel #root {
   writing-mode: horizontal-tb;
 }
 
-/* Pill: the bar is a capsule inset from the panel's edges. */
-.panel.shape-pill {
+/* Pill title bar (a style on any shape): a capsule inset from the panel's edges. */
+.panel.style-pill {
   --sep: transparent;
 }
 
-.panel.shape-pill .titlebar {
+.panel.style-pill .titlebar {
   flex-basis: calc(var(--titlebar) - 6px);
   height: calc(var(--titlebar) - 6px);
   margin: 3px;
@@ -350,37 +350,98 @@ body.view-panel #root {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
 
-.panel.shape-pill.bar-left .titlebar,
-.panel.shape-pill.bar-right .titlebar {
+.panel.style-pill.bar-left .titlebar,
+.panel.style-pill.bar-right .titlebar {
   height: auto;
   padding: 3px 0;
 }
 
-.panel.shape-pill.bar-up .titlebar,
-.panel.shape-pill.bar-down .titlebar {
+.panel.style-pill.bar-up .titlebar,
+.panel.style-pill.bar-down .titlebar {
   padding: 0 3px;
 }
 
-.panel.shape-pill .tb-btn {
+.panel.style-pill .tb-btn {
   border-radius: 999px;
 }
 
-.panel.shape-pill.collapsed {
+.panel.style-pill.shape-default.collapsed {
   border-color: transparent;
 }
 
-/* Minimal: no bar until collapsed; the buttons appear on hover. */
-.panel.shape-minimal {
+/* Minimal title bar (a style on any shape): just the title, no bar fill,
+   expanded or collapsed. The collapse button appears on hover; once
+   collapsed, the expand button always shows, since it's the way back. */
+.panel.style-minimal {
   --sep: transparent;
 }
 
-.panel.shape-minimal:not(.collapsed) .chevron {
+.panel.style-minimal:not(.collapsed) .chevron {
   opacity: 0;
 }
 
-.panel.shape-minimal:hover .chevron,
-.panel.shape-minimal .chevron:focus-visible {
+.panel.style-minimal:hover .chevron,
+.panel.style-minimal .chevron:focus-visible {
   opacity: 0.75;
+}
+
+/* Soft title bar (a style on any shape): instead of a hard block with a
+   separator line, the bar's color (--bar-fill) fades out on every side: a
+   little at its ends and outer edge, and into the panel past its inner edge.
+   It sits on a layer of its own so the mask leaves the title and buttons
+   opaque. --across runs from the outer edge to the inner one. */
+.panel.style-soft {
+  --sep: transparent;
+}
+
+.panel.style-soft .titlebar {
+  position: relative;
+  isolation: isolate;
+  --along: to right;
+  --across: to bottom;
+}
+
+.panel.style-soft .titlebar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--bar-fill);
+  mask-image:
+    linear-gradient(var(--along), transparent, #000 14px, #000 calc(100% - 14px), transparent),
+    linear-gradient(var(--across), transparent, #000 6px, #000 calc(100% - 12px), transparent);
+  mask-composite: intersect;
+}
+
+.panel.style-soft.bar-up .titlebar::before {
+  bottom: -6px;
+}
+
+.panel.style-soft.bar-down .titlebar {
+  --across: to top;
+}
+
+.panel.style-soft.bar-down .titlebar::before {
+  top: -6px;
+}
+
+.panel.style-soft.bar-left .titlebar {
+  --along: to bottom;
+  --across: to right;
+}
+
+.panel.style-soft.bar-left .titlebar::before {
+  right: -6px;
+}
+
+.panel.style-soft.bar-right .titlebar {
+  --along: to bottom;
+  --across: to left;
+}
+
+.panel.style-soft.bar-right .titlebar::before {
+  left: -6px;
 }
 
 /* Points at the content when expanded, and a quarter turn back when collapsed. */
@@ -820,7 +881,7 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
   font-weight: 600;
 }
 
-.preview-fill.shape-pill .preview-bar {
+.preview-fill.style-pill .preview-bar {
   flex-basis: 20px;
   height: 20px;
   margin: 3px;
@@ -828,9 +889,59 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
-.preview-fill.shape-pill.bar-left .preview-bar,
-.preview-fill.shape-pill.bar-right .preview-bar {
+.preview-fill.style-pill.bar-left .preview-bar,
+.preview-fill.style-pill.bar-right .preview-bar {
   height: auto;
+}
+
+/* Same as the panel's soft bar (see .panel.style-soft), at preview scale. */
+.preview-fill.style-soft .preview-bar {
+  position: relative;
+  isolation: isolate;
+  --along: to right;
+  --across: to bottom;
+}
+
+.preview-fill.style-soft .preview-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--bar-fill);
+  mask-image:
+    linear-gradient(var(--along), transparent, #000 10px, #000 calc(100% - 10px), transparent),
+    linear-gradient(var(--across), transparent, #000 4px, #000 calc(100% - 8px), transparent);
+  mask-composite: intersect;
+}
+
+.preview-fill.style-soft.bar-up .preview-bar::before {
+  bottom: -4px;
+}
+
+.preview-fill.style-soft.bar-down .preview-bar {
+  --across: to top;
+}
+
+.preview-fill.style-soft.bar-down .preview-bar::before {
+  top: -4px;
+}
+
+.preview-fill.style-soft.bar-left .preview-bar {
+  --along: to bottom;
+  --across: to right;
+}
+
+.preview-fill.style-soft.bar-left .preview-bar::before {
+  right: -4px;
+}
+
+.preview-fill.style-soft.bar-right .preview-bar {
+  --along: to bottom;
+  --across: to left;
+}
+
+.preview-fill.style-soft.bar-right .preview-bar::before {
+  left: -4px;
 }
 
 .preview-peek {
@@ -1232,7 +1343,9 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  /* One equal column per option. */
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 6px;
 }
 
@@ -1318,7 +1431,7 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
   translate: -50% 0;
 }
 
-.art.shape-pill .art-bar {
+.art.style-pill .art-bar {
   top: 3px;
   left: 4px;
   right: 4px;
@@ -1326,10 +1439,18 @@ body.view-app #root::-webkit-scrollbar-thumb:active {
   border-radius: 999px;
 }
 
-.art.shape-minimal .art-bar {
+.art.style-minimal .art-bar {
   height: 0;
   border-bottom: 1px dashed var(--art-bar);
   background: none;
+}
+
+.art.style-soft .art-bar {
+  height: 13px;
+  mask-image:
+    linear-gradient(to right, transparent, #000 20%, #000 80%, transparent),
+    linear-gradient(to bottom, transparent, #000 20%, #000 55%, transparent);
+  mask-composite: intersect;
 }
 
 .tiles input:checked + .seg-face .art {

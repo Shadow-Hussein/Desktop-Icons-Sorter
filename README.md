@@ -10,11 +10,12 @@ Free and open source under the [MIT License](LICENSE).
 
 - **Panels that live on the desktop.** They sit behind normal windows, stay out of the taskbar and Alt+Tab, and stay visible on "Show desktop" (Win+D).
 - **Folder-backed.** Each panel shows a real folder (`%USERPROFILE%\DesktopSorter\<panel>` by default). Dropping a desktop icon onto a panel copies it into that folder, or moves it there so it leaves the cluttered desktop: choose Copy (the default) or Move in app settings. Icons dragged from one panel to another always move. The grouping survives restarts and Windows rearranging your icons.
-- **Customizable per panel**, in a settings window with one-click controls (picture tiles for the title bar shape, arrow buttons for the collapse direction, toggle switches) that follows the Windows light or dark theme:
+- **Customizable per panel**, in a settings window with one-click controls (picture tiles for the title bar shape and style, arrow buttons for the collapse direction, toggle switches) that follows the Windows light or dark theme:
   - title (double-click it to rename)
   - background color and transparency
   - title bar color, transparency and text color
-  - title bar shape: default, dock (a collapsed panel shows a row of its apps you can click to open), tile (a collapsed panel is a square with four of its apps, at the start, middle or end of its edge), pill, or minimal (no bar until the panel collapses)
+  - title bar shape: default, dock (a collapsed panel shows a row of its apps you can click to open) or tile (a collapsed panel is a square with four of its apps, at the start, middle or end of its edge)
+  - title bar style, with any shape: standard, pill (a rounded capsule), minimal (just the title, no bar, expanded or collapsed; the collapse arrow shows when you point at the panel, and a collapsed panel always shows its expand arrow) or soft (the bar fades out at its ends and blends into the panel instead of hard edges)
   - color presets
   - icon size (small, medium, large) and sort order (custom, name, type, date modified)
 - **Arrange icons your way.** Drag an icon to any spot in its panel, including empty ones, and it stays there, gaps and all. Drop it on another icon and that icon and the ones right after it slide along to the next gap, like a phone's home screen. Custom order is the default; new items go after the last icon, and an item dropped in from elsewhere lands where you drop it. If a panel gets too narrow for an icon's column, the icon moves to the next free spot until the panel is wide enough again. Picking Name, Type or Date sorts the panel instead, and dragging an icon switches back to custom order.

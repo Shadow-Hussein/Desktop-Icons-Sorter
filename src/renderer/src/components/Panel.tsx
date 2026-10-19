@@ -63,12 +63,13 @@ export function Panel() {
   const shape = panel.headerShape
   // A collapsed folder card has a fixed size; others resize along their bar.
   const collapsedEdges: ResizeEdge[] = shape === 'folder' ? [] : sideways ? ['n', 's'] : ['e', 'w']
-  // A collapsed pill is only its capsule; the panel behind it stays clear.
-  const clear = panel.collapsed && shape === 'pill'
+  const style = panel.titleBarStyle
+  // A collapsed pill bar is only its capsule; the panel behind it stays clear.
+  const clear = panel.collapsed && style === 'pill' && shape === 'default'
 
   return (
     <div
-      className={`panel bar-${panel.collapseDirection} shape-${shape} align-${
+      className={`panel bar-${panel.collapseDirection} shape-${shape} style-${style} align-${
         panel.collapseAlign
       }${panel.collapsed ? ' collapsed' : ''}${dropActive ? ' drop-active' : ''}`}
       style={

@@ -5,7 +5,8 @@ import type {
   HeaderShape,
   IconSize,
   PanelPatch,
-  SortBy
+  SortBy,
+  TitleBarStyle
 } from '../../../shared/types'
 import { hexToRgba } from '../color'
 import { usePanelState } from '../usePanelState'
@@ -24,9 +25,7 @@ const PRESETS: { name: string; bg: string; bar: string; text: string }[] = [
 const SHAPES: { value: HeaderShape; name: string; hint: string }[] = [
   { value: 'default', name: 'Default', hint: 'A title bar along the edge.' },
   { value: 'phone', name: 'Dock', hint: 'Collapses to a card with a row of its apps.' },
-  { value: 'folder', name: 'Tile', hint: 'Collapses to a square with a 2 × 2 grid of its apps.' },
-  { value: 'pill', name: 'Pill', hint: 'A rounded capsule for a title bar.' },
-  { value: 'minimal', name: 'Minimal', hint: 'No title bar until the panel collapses.' }
+  { value: 'folder', name: 'Tile', hint: 'Collapses to a square with a 2 × 2 grid of its apps.' }
 ]
 
 const SHAPE_OPTIONS: SegmentOption<HeaderShape>[] = SHAPES.map((s) => ({
@@ -49,6 +48,33 @@ const SHAPE_OPTIONS: SegmentOption<HeaderShape>[] = SHAPES.map((s) => ({
             )}
           </span>
         )}
+      </span>
+      {s.name}
+    </>
+  )
+}))
+
+const STYLES: { value: TitleBarStyle; name: string; hint: string }[] = [
+  { value: 'standard', name: 'Standard', hint: 'A solid bar with a line under it.' },
+  { value: 'pill', name: 'Pill', hint: "A rounded capsule, inset from the panel's edges." },
+  {
+    value: 'minimal',
+    name: 'Minimal',
+    hint: 'Just the title, no bar. The collapse button shows when you point at the panel.'
+  },
+  {
+    value: 'soft',
+    name: 'Soft',
+    hint: 'No hard edges: the bar fades out at its ends and blends into the panel.'
+  }
+]
+
+const STYLE_OPTIONS: SegmentOption<TitleBarStyle>[] = STYLES.map((s) => ({
+  value: s.value,
+  label: (
+    <>
+      <span className={`art style-${s.value}`}>
+        <span className="art-bar" />
       </span>
       {s.name}
     </>
@@ -112,6 +138,8 @@ export function SettingsView() {
   const update = (patch: PanelPatch): void => void window.sorter.updatePanel(patch)
   const sideways = p.collapseDirection === 'left' || p.collapseDirection === 'right'
   const shape = SHAPES.find((s) => s.value === p.headerShape) ?? SHAPES[0]
+  const style = STYLES.find((s) => s.value === p.titleBarStyle) ?? STYLES[0]
+  const barFill = hexToRgba(p.titleBarColor, p.titleBarOpacity)
   const isPreset = (s: (typeof PRESETS)[number]): boolean =>
     p.bgColor.toLowerCase() === s.bg &&
     p.titleBarColor.toLowerCase() === s.bar &&
@@ -121,18 +149,23 @@ export function SettingsView() {
     <div className="settings">
       <div className="preview" aria-label="Preview">
         <div
-          className={`preview-fill bar-${p.collapseDirection} shape-${p.headerShape}`}
+          className={`preview-fill bar-${p.collapseDirection} shape-${p.headerShape} style-${p.titleBarStyle}`}
           style={{ background: hexToRgba(p.bgColor, p.bgOpacity) }}
         >
           <div
             className="preview-bar"
-            style={{
-              background:
-                p.headerShape === 'minimal'
-                  ? 'transparent'
-                  : hexToRgba(p.titleBarColor, p.titleBarOpacity),
-              color: p.titleTextColor
-            }}
+            style={
+              {
+                // As on the panel: no bar while minimal, and a soft bar paints
+                // its color on a faded layer of its own.
+                background:
+                  p.titleBarStyle === 'minimal' || p.titleBarStyle === 'soft'
+                    ? 'transparent'
+                    : barFill,
+                '--bar-fill': barFill,
+                color: p.titleTextColor
+              } as CSSProperties
+            }
           >
             {p.title || 'Untitled'}
           </div>
@@ -203,6 +236,15 @@ export function SettingsView() {
             value={p.headerShape}
             options={SHAPE_OPTIONS}
             onChange={(v) => update({ headerShape: v })}
+          />
+        </Row>
+        <Row label="Title bar style" hint={style.hint} group stacked>
+          <Segmented
+            label="Title bar style"
+            variant="tiles"
+            value={p.titleBarStyle}
+            options={STYLE_OPTIONS}
+            onChange={(v) => update({ titleBarStyle: v })}
           />
         </Row>
         <Row label="Background">

@@ -2,7 +2,9 @@ export type IconSize = 'small' | 'medium' | 'large'
 /** 'custom' keeps the order the user arranged by dragging (PanelConfig.order). */
 export type SortBy = 'custom' | 'name' | 'type' | 'modified'
 export type CollapseDirection = 'up' | 'down' | 'left' | 'right'
-export type HeaderShape = 'default' | 'phone' | 'folder' | 'pill' | 'minimal'
+export type HeaderShape = 'default' | 'phone' | 'folder'
+/** How the title bar looks, on any shape. 'soft' fades the bar out instead of hard edges. */
+export type TitleBarStyle = 'standard' | 'pill' | 'minimal' | 'soft'
 export type CollapseAlign = 'start' | 'center' | 'end'
 /** How a panel takes in items from outside: copies them, or moves them out of where they were. */
 export type AddMode = 'copy' | 'move'
@@ -38,10 +40,16 @@ export interface PanelConfig {
   /** Which edge the title bar sits on; the panel collapses toward it. */
   collapseDirection: CollapseDirection
   /**
-   * How the title bar looks. A collapsed phone panel also shows a row of its
-   * apps, and a collapsed folder panel is a square with four of them.
+   * What the panel collapses to: its title bar, a card with a row of its apps
+   * (phone, "Dock") or a square with four of them (folder, "Tile").
    */
   headerShape: HeaderShape
+  /**
+   * How the title bar looks: standard, a capsule inset from the edges (pill),
+   * none until the panel collapses (minimal), or fading out at its ends and
+   * into the panel instead of hard edges (soft).
+   */
+  titleBarStyle: TitleBarStyle
   /**
    * Where a collapsed folder square sits along its title bar's edge: the left,
    * middle or right of it (top, middle or bottom for side bars).
@@ -116,6 +124,7 @@ export type PanelPatch = Partial<
     | 'sortBy'
     | 'collapseDirection'
     | 'headerShape'
+    | 'titleBarStyle'
     | 'collapseAlign'
     | 'stackable'
     | 'catchNewItems'
