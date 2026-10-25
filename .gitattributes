@@ -1,4 +1,4 @@
-# Keep LF everywhere (Prettier enforces it), including Windows checkouts.
+# Keep LF everywhere, including Windows checkouts.
 * text=auto eol=lf
 *.png binary
 *.ico binary

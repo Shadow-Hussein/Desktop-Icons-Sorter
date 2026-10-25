@@ -1,6 +1,6 @@
 name: Release
 
-# Push a version tag (e.g. `v0.1.0`, matching package.json) to build the
+# Push a version tag (e.g. `v0.3.0`, matching Cargo.toml) to build the
 # Windows installer + portable exe and publish them as a GitHub release.
 # Release notes list the commit subjects since the previous tag.
 # PRs that touch packaging run the same build without publishing.
@@ -10,9 +10,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
-      - electron-builder.yml
-      - package.json
-      - package-lock.json
+      - installer/**
+      - Cargo.toml
+      - Cargo.lock
   workflow_dispatch:
 
 permissions:
@@ -26,29 +26,34 @@ jobs:
         with:
           # Full history and tags, so release notes can list commits since the last tag.
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Check the tag matches package.json
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Read the version from Cargo.toml
+        id: version
         shell: bash
         run: |
-          version=$(node -p "require('./package.json').version")
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
             exit 1
           fi
 
-      - run: npm test
+      - run: cargo test
+      - run: cargo build --release
 
       - name: Build installer and portable exe
-        run: npm run dist:win
-        env:
-          # No code-signing certificate is configured yet.
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        shell: bash
+        run: |
+          v='${{ steps.version.outputs.version }}'
+          mkdir -p dist
+          # The exe is a single file that runs from anywhere, so it doubles as the portable build.
+          cp target/release/desktop-icons-sorter.exe "dist/desktop-icons-sorter-$v-portable.exe"
+          makensis=$(command -v makensis || echo '/c/Program Files (x86)/NSIS/makensis.exe')
+          if [ ! -x "$makensis" ]; then choco install nsis -y --no-progress; fi
+          "$makensis" -V2 "-DVERSION=$v" "-DOUTFILE=..\\dist\\desktop-icons-sorter-$v-setup.exe" installer/installer.nsi
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,14 +1,10 @@
-node_modules/
-out/
+# Build output
+target/
 dist/
 *.log
 .DS_Store
 .vscode/
 .idea/
-*.tsbuildinfo
 
 # graphify: generated knowledge graph (rebuild with `graphify update .`)
 graphify-out/
-
-# Rust build output
-target/

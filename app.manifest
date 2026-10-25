@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="com.shadowhussein.desktopiconssorter" version="0.2.0.0" />
+  <!-- An identity for the manifest, not the app's version (that's in Cargo.toml). -->
+  <assemblyIdentity type="win32" name="com.shadowhussein.desktopiconssorter" version="1.0.0.0" />
   <dependency>
     <dependentAssembly>
       <!-- Common controls v6: TaskDialog and themed EDIT controls. -->

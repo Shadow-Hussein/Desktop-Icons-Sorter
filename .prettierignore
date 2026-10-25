@@ -1,8 +1,0 @@
-out
-dist
-node_modules
-package-lock.json
-# Managed by graphify (`graphify claude install --project`)
-.claude/
-graphify-out
-target
