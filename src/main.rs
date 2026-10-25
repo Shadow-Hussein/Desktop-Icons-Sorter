@@ -1,9 +1,81 @@
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Shell helpers for menus, drag and drop and settings are in place ahead of
+// the features that use them. Remove once those land.
+#![allow(dead_code)]
+
+mod app;
+mod panel;
+mod win;
+
+use sorter::config::{ConfigStore, config_path};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+use windows::Win32::System::Threading::{CreateMutexW, INFINITE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, FindWindowW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, TranslateMessage, WM_QUIT,
+};
+use windows::core::{PCWSTR, w};
 
 fn main() {
-    // The Win32 app (panels, tray, message loop) lands in milestone 1.
-    let path = sorter::config::config_path();
-    let config = sorter::config::ConfigStore::load(path).config().clone();
-    println!("{} panel(s) in config", config.panels.len());
+    // One instance: a second launch shows the first one's panels and exits.
+    let _instance = unsafe { CreateMutexW(None, true, w!("Local\\DesktopIconsSorter.Instance")) };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        if let Ok(host) = unsafe { FindWindowW(app::HOST_CLASS, PCWSTR::null()) } {
+            let _ = unsafe { PostMessageW(Some(host), app::WM_APP_SHOW, WPARAM(0), LPARAM(0)) };
+        }
+        return;
+    }
+
+    // OLE (not just COM): drag and drop needs it.
+    if unsafe { OleInitialize(None) }.is_err() {
+        return;
+    }
+    app::register_classes();
+    let host = app::create_host();
+    let store = ConfigStore::load(config_path());
+    let state = match app::App::new(store, host) {
+        Ok(a) => a,
+        Err(e) => {
+            win::shell::error_box(None, "Desktop Icons Sorter", &format!("Could not start: {e}"));
+            return;
+        }
+    };
+    app::install(state);
+    app::with_app(|a| a.start());
+    app::run_deferred();
+
+    run_loop();
+
+    app::with_app(|a| a.save_now());
+    app::uninstall();
+    unsafe { OleUninitialize() };
+}
+
+/// Waits for window messages and for the folder watches' events together.
+fn run_loop() {
+    let mut msg = MSG::default();
+    loop {
+        let handles = app::with_app(|a| a.wait_handles()).unwrap_or_default();
+        let r = unsafe {
+            MsgWaitForMultipleObjectsEx(Some(&handles), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        let i = r.0.wrapping_sub(WAIT_OBJECT_0.0) as usize;
+        if i < handles.len() {
+            app::with_app(|a| a.on_signal(handles[i]));
+            app::run_deferred();
+            continue;
+        }
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            if msg.message == WM_QUIT {
+                return;
+            }
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
 }
