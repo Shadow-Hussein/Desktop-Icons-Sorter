@@ -71,6 +71,11 @@ fn read_bitmap(hdc: HDC, bitmap: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
     (lines == h).then_some(bits)
 }
 
+/// Premultiplied pixels never have a color channel above their alpha.
+fn is_straight_alpha(px: &[u8]) -> bool {
+    px.as_chunks::<4>().0.iter().any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3])
+}
+
 fn has_alpha(px: &[u8]) -> bool {
     px.as_chunks::<4>().0.iter().any(|p| p[3] != 0)
 }
@@ -151,8 +156,7 @@ unsafe fn icon_pixels(icon: HICON, size: i32) -> Option<Pixels> {
     result
 }
 
-/// The shell's image for an item: a thumbnail, or its icon. The bitmap the
-/// image factory returns already has premultiplied alpha.
+/// The shell's image for an item: a thumbnail, or its icon.
 pub fn shell_image(path: &Path, size: i32) -> Option<Pixels> {
     let w = Wide::os(path.as_os_str());
     unsafe {
@@ -173,6 +177,10 @@ pub fn shell_image(path: &Path, size: i32) -> Option<Pixels> {
             for p in data.as_chunks_mut::<4>().0 {
                 p[3] = 255;
             }
+        } else if is_straight_alpha(&data) {
+            // Icons come back with straight alpha (thumbnails may not);
+            // drawn as premultiplied, their soft edges get light fringes.
+            premultiply(&mut data);
         }
         Some(Pixels { w: bm.bmWidth as u32, h: bm.bmHeight as u32, data })
     }

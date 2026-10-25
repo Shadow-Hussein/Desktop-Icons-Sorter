@@ -323,7 +323,7 @@ fn draw_item(
         // The arrow is drawn at the item's own size, like Explorer's overlay.
         let overlay: Option<ID2D1Bitmap> = icons.overlay(gfx, px).cloned();
         if let Some(o) = overlay {
-            c.bitmap(&o, icon, 1.0);
+            c.image(&o, icon);
         }
     }
     let label_h = if selected { 200.0 } else { 31.0 };
@@ -349,7 +349,7 @@ fn draw_icon(
     };
     match bitmap {
         Some(b) => {
-            c.bitmap(&b, r, 1.0);
+            c.image(&b, r);
             true
         }
         None => {
@@ -534,8 +534,8 @@ fn draw_peek(c: &mut Canvas, s: &Scene, icons: &mut IconCache, missing: &mut boo
         }
         return;
     }
-    // The panel's own icon size, so these reuse the icons the grid already loaded.
-    let px = (icon_pixels(s.config.icon_size) as f32 * c.scale).round() as i32;
+    // Made at the size they show, so they're as sharp as the grid's.
+    let px = (PEEK_ICON * c.scale).round() as i32;
     for (i, r) in l.peek.iter().enumerate() {
         let Some(item) = panel.items.get(i) else { break };
         if panel.hover == Some(Hit::Peek(i)) {

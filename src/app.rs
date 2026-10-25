@@ -637,7 +637,12 @@ impl App {
         let Some(cfg) = self.config_of(i).cloned() else { return };
         let panel = &self.panels[i];
         let l = current_layout(&cfg, panel);
-        let px = (sorter::model::icon_pixels(cfg.icon_size) as f32 * panel.scale).round() as i32;
+        // Icons are made at the size they show: the grid's, or a collapsed panel's apps.
+        let dip = match l.grid {
+            Some(g) => g.icon,
+            None => sorter::panel_layout::PEEK_ICON,
+        };
+        let px = (dip * panel.scale).round() as i32;
         // The items in view: grid tiles on screen, or the apps a collapsed panel shows.
         let visible: Vec<(PathBuf, f64)> = match &l.grid {
             Some(g) => {

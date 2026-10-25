@@ -21,12 +21,12 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-    D2D1_BITMAP_PROPERTIES, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_EXTEND_MODE_CLAMP,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_GAMMA_2_2,
-    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Bitmap, ID2D1DCRenderTarget,
-    ID2D1Factory, ID2D1SolidColorBrush,
+    D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_BITMAP_PROPERTIES,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE,
+    D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Bitmap,
+    ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE,
@@ -548,16 +548,25 @@ impl Canvas<'_> {
         self.text(text, font, r, c);
     }
 
-    pub fn bitmap(&mut self, b: &ID2D1Bitmap, r: Rect, opacity: f32) {
-        unsafe {
-            self.gfx.rt.DrawBitmap(
-                b,
-                Some(&rect_f(r)),
-                opacity,
-                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                None,
-            )
+    /// Draws an icon or thumbnail into `r` sharply: fitted inside it with its
+    /// shape kept, on whole device pixels. An icon made at exactly that size
+    /// is copied pixel for pixel; filtering it at a fractional position would
+    /// blur it.
+    pub fn image(&mut self, b: &ID2D1Bitmap, r: Rect) {
+        let size = unsafe { b.GetPixelSize() };
+        let (bw, bh) = (size.width.max(1) as f32, size.height.max(1) as f32);
+        let s = self.scale;
+        let fit = ((r.w * s) / bw).min((r.h * s) / bh);
+        let (w, h) = ((bw * fit).round(), (bh * fit).round());
+        let x = (r.x * s + (r.w * s - w) / 2.0).round();
+        let y = (r.y * s + (r.h * s - h) / 2.0).round();
+        let dest = Rect::new(x / s, y / s, w / s, h / s);
+        let mode = if w == bw && h == bh {
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+        } else {
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
         };
+        unsafe { self.gfx.rt.DrawBitmap(b, Some(&rect_f(dest)), 1.0, mode, None) };
     }
 
     pub fn clip(&mut self, r: Rect) {
