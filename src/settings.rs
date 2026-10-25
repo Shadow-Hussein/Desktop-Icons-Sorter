@@ -1207,6 +1207,7 @@ impl App {
 
     /// The Windows theme changed: recolor the settings windows.
     pub fn theme_changed(&mut self) {
+        crate::win::darkmode::refresh();
         let theme = Theme::current();
         for s in &mut self.settings {
             s.theme = theme;

@@ -1,6 +1,7 @@
 //! Win32 side of the app: windows, drawing, shell calls. Everything here runs
 //! on the one UI thread.
 
+pub mod darkmode;
 pub mod desktop_layer;
 pub mod dialogs;
 pub mod dpi;

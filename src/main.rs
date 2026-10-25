@@ -34,6 +34,8 @@ fn main() {
     if unsafe { OleInitialize(None) }.is_err() {
         return;
     }
+    // Before any window or menu exists, so all of them follow the theme.
+    win::darkmode::allow_dark_menus();
     procs::register_classes();
     settings::register_class();
     let host = procs::create_host(host_title.pcwstr());
