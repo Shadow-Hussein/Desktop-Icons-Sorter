@@ -9,3 +9,6 @@ dist/
 
 # graphify: generated knowledge graph (rebuild with `graphify update .`)
 graphify-out/
+
+# Rust build output
+target/

@@ -1,0 +1,107 @@
+{
+  "version": 2,
+  "panels": [
+    {
+      "id": "abde8d0c-3b5f-481c-b763-7bc9170c11f4",
+      "title": "Apps",
+      "bounds": {
+        "x": 17,
+        "y": 14,
+        "width": 329,
+        "height": 535
+      },
+      "collapsed": false,
+      "collapseDirection": "up",
+      "headerShape": "phone",
+      "titleBarStyle": "pill",
+      "collapseAlign": "center",
+      "stackable": true,
+      "bgColor": "#07255a",
+      "bgOpacity": 0.5,
+      "titleBarColor": "#173569",
+      "titleBarOpacity": 0.55,
+      "titleTextColor": "#ffffff",
+      "folderPath": "C:\\Users\\example\\DesktopSorter\\Apps",
+      "iconSize": "medium",
+      "sortBy": "custom",
+      "cells": [
+        {
+          "name": "Other Apps",
+          "col": 0,
+          "row": 0
+        },
+        {
+          "name": "Syncthing.lnk",
+          "col": 1,
+          "row": 0
+        },
+        {
+          "name": "Toggle-WiFi.bat",
+          "col": 0,
+          "row": 2
+        }
+      ],
+      "order": ["Syncthing.lnk", "Toggle-WiFi.bat", "Other Apps", "Steam.lnk"],
+      "catchNewItems": true
+    },
+    {
+      "id": "d13ce2a6-ad4b-4a3a-a319-e3b69f8f4b6b",
+      "title": "Development",
+      "bounds": {
+        "x": 1152,
+        "y": 14,
+        "width": 369,
+        "height": 249
+      },
+      "collapsed": true,
+      "collapseDirection": "right",
+      "headerShape": "folder",
+      "titleBarStyle": "soft",
+      "collapseAlign": "end",
+      "stackable": false,
+      "bgColor": "#4a1f5c",
+      "bgOpacity": 0.5,
+      "titleBarColor": "#2f1239",
+      "titleBarOpacity": 0.55,
+      "titleTextColor": "#ffffff",
+      "folderPath": "D:\\Dev links",
+      "iconSize": "large",
+      "sortBy": "modified",
+      "cells": [],
+      "order": [],
+      "catchNewItems": false
+    },
+    {
+      "id": "0f6f0c1e-7d7a-4e55-9d4b-2f1d1f9e8a11",
+      "title": "Docs",
+      "bounds": {
+        "x": 400,
+        "y": 600,
+        "width": 300,
+        "height": 180
+      },
+      "collapsed": false,
+      "collapseDirection": "down",
+      "headerShape": "default",
+      "titleBarStyle": "minimal",
+      "collapseAlign": "start",
+      "stackable": true,
+      "bgColor": "#f2f4f7",
+      "bgOpacity": 0,
+      "titleBarColor": "#d5dae1",
+      "titleBarOpacity": 1,
+      "titleTextColor": "#111111",
+      "folderPath": "C:\\Users\\example\\DesktopSorter\\Docs",
+      "iconSize": "small",
+      "sortBy": "name",
+      "cells": [],
+      "order": ["notes.txt"],
+      "catchNewItems": false
+    }
+  ],
+  "startWithWindows": true,
+  "locked": false,
+  "snapping": true,
+  "stacking": true,
+  "addMode": "move"
+}

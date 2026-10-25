@@ -5,3 +5,4 @@ package-lock.json
 # Managed by graphify (`graphify claude install --project`)
 .claude/
 graphify-out
+target

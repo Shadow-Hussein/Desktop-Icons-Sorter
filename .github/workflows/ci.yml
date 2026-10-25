@@ -30,3 +30,15 @@ jobs:
           name: desktop-icons-sorter-win-unpacked
           path: dist/win-unpacked
           retention-days: 7
+
+  # The Rust rewrite, built alongside the Electron app until it replaces it.
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
