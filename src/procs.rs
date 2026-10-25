@@ -11,10 +11,11 @@ use windows::Win32::System::Ole::DROPEFFECT;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_CONTROL, VK_ESCAPE, VK_F2, VK_RETURN,
+    VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F2, VK_F5, VK_F10, VK_HOME, VK_LEFT,
+    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{PCWSTR, w};
+use windows::core::PCWSTR;
 
 use crate::app::{
     App, Deferred, EditTarget, HOST_CLASS, MenuKind, PANEL_CLASS, TIMER_ANIM, TIMER_REFRESH,
@@ -27,6 +28,7 @@ use crate::panel::{
 };
 use crate::win::dragdrop::{self, DropHandler, effect_for};
 use crate::win::menu::{self, Item};
+use crate::win::shellmenu::{self, Choice};
 use crate::win::{desktop_layer, dpi, point_of, wheel_delta};
 
 const WHEEL_STEP: f32 = 48.0;
@@ -65,12 +67,13 @@ pub fn register_classes() {
 /// The hidden window that owns the tray icon and app-wide timers. It's a
 /// top-level window (not message-only) so it hears Explorer's TaskbarCreated
 /// broadcast.
-pub fn create_host() -> HWND {
+/// `title` tells instances on different profiles apart.
+pub fn create_host(title: PCWSTR) -> HWND {
     unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW,
             HOST_CLASS,
-            w!("Desktop Icons Sorter"),
+            title,
             WS_POPUP,
             0,
             0,
@@ -94,11 +97,6 @@ const CMD_START: usize = 4;
 const CMD_APP_SETTINGS: usize = 5;
 const CMD_CONFIG: usize = 6;
 const CMD_QUIT: usize = 7;
-const CMD_OPEN: usize = 10;
-const CMD_LOCATION: usize = 11;
-const CMD_RENAME: usize = 12;
-const CMD_TO_DESKTOP: usize = 13;
-const CMD_RECYCLE: usize = 14;
 const CMD_SIZE: usize = 20; // + IconSize index
 const CMD_SORT: usize = 30; // + SortBy index
 const CMD_OPEN_FOLDER: usize = 40;
@@ -106,7 +104,8 @@ const CMD_SETTINGS: usize = 41;
 const CMD_RENAME_TITLE: usize = 43;
 const CMD_COLLAPSE: usize = 44;
 const CMD_DELETE: usize = 47;
-const CMD_TO_PANEL: usize = 100; // + panel index
+const CMD_PASTE: usize = 48;
+const CMD_NEW_FOLDER: usize = 49;
 
 const SIZES: [(IconSize, &str); 3] = [
     (IconSize::Small, "Small icons"),
@@ -138,7 +137,7 @@ pub fn tray_menu() {
         Item::Sep,
         Item::cmd(CMD_QUIT, "Quit"),
     ];
-    let cmd = menu::show(&items, host);
+    let cmd = menu::show(&items, host, None);
     with_app(|a| match cmd {
         CMD_NEW => a.new_panel(),
         CMD_SHOW => a.set_hidden(!a.hidden),
@@ -177,54 +176,34 @@ fn view_menu(size: IconSize, sort: SortBy) -> [Item; 2] {
     ]
 }
 
-/// Shows a panel's title, background or item menu and does what was chosen.
-pub fn panel_menu(id: &str, kind: MenuKind) {
-    let Some((hwnd, items, others)) = with_app(|a| {
+/// Shows a panel's title or background menu, or the shell's menu for items,
+/// and does what was chosen. `at` is where (screen pixels); None for the cursor.
+pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
+    if let MenuKind::Items(paths) = kind {
+        item_menu(id, paths, at);
+        return;
+    }
+    let Some((hwnd, items)) = with_app(|a| {
         let i = a.panel_by_id(id)?;
         let p = a.config_of(i)?.clone();
-        let others: Vec<(String, String)> = a
-            .store
-            .config()
-            .panels
-            .iter()
-            .filter(|o| o.id != id)
-            .map(|o| {
-                (
-                    o.id.clone(),
-                    if o.title.is_empty() { "(untitled)".into() } else { o.title.clone() },
-                )
-            })
-            .collect();
         let [view, sort] = view_menu(p.icon_size, p.sort_by);
         let items = match &kind {
-            MenuKind::Item(_) => {
-                let mut to = vec![Item::cmd(CMD_TO_DESKTOP, "Desktop")];
-                if !others.is_empty() {
-                    to.push(Item::Sep);
+            MenuKind::Background => {
+                let mut items = vec![view, sort, Item::Sep];
+                if shellmenu::can_paste() {
+                    items.push(Item::cmd(CMD_PASTE, "Paste"));
                 }
-                to.extend(
-                    others.iter().enumerate().map(|(n, (_, t))| Item::cmd(CMD_TO_PANEL + n, t)),
-                );
-                vec![
-                    Item::cmd(CMD_OPEN, "Open"),
-                    Item::cmd(CMD_LOCATION, "Open file location"),
-                    Item::cmd(CMD_RENAME, "Rename"),
+                items.extend([
+                    Item::cmd(CMD_NEW_FOLDER, "New folder"),
                     Item::Sep,
-                    Item::Sub("Move to".into(), to),
+                    Item::cmd(CMD_OPEN_FOLDER, "Open folder in Explorer"),
+                    Item::cmd(CMD_SETTINGS, "Panel settings…"),
                     Item::Sep,
-                    Item::cmd(CMD_RECYCLE, "Move to Recycle Bin"),
-                ]
+                    Item::cmd(CMD_NEW, "New panel"),
+                ]);
+                items
             }
-            MenuKind::Background => vec![
-                view,
-                sort,
-                Item::Sep,
-                Item::cmd(CMD_OPEN_FOLDER, "Open folder in Explorer"),
-                Item::cmd(CMD_SETTINGS, "Panel settings…"),
-                Item::Sep,
-                Item::cmd(CMD_NEW, "New panel"),
-            ],
-            MenuKind::Title => vec![
+            _ => vec![
                 Item::cmd(CMD_RENAME_TITLE, "Rename"),
                 Item::cmd(CMD_COLLAPSE, if p.collapsed { "Expand" } else { "Collapse" }),
                 Item::cmd(CMD_SETTINGS, "Panel settings…"),
@@ -238,41 +217,15 @@ pub fn panel_menu(id: &str, kind: MenuKind) {
                 Item::cmd(CMD_DELETE, "Delete panel…"),
             ],
         };
-        Some((a.panels[i].hwnd, items, others))
+        Some((a.panels[i].hwnd, items))
     })
     .flatten() else {
         return;
     };
-    let cmd = menu::show(&items, hwnd);
+    let cmd = menu::show(&items, hwnd, at);
     with_app(|a| {
         let Some(i) = a.panel_by_id(id) else { return };
-        let item = match &kind {
-            MenuKind::Item(p) => Some(p.clone()),
-            _ => None,
-        };
         match cmd {
-            CMD_OPEN => item.iter().for_each(|p| a.open_item(p)),
-            CMD_LOCATION => {
-                if let Some(p) = item.filter(|p| a.is_managed_path(p)) {
-                    crate::win::shell::show_in_folder(&p);
-                }
-            }
-            CMD_RENAME => {
-                if let Some(p) = item {
-                    a.start_edit(i, EditTarget::Item(p));
-                }
-            }
-            CMD_TO_DESKTOP => {
-                if let Some(p) = item {
-                    let desktop = a.desktop_dir.clone();
-                    a.move_item_to(&p, &desktop);
-                }
-            }
-            CMD_RECYCLE => {
-                if let Some(p) = item.filter(|p| a.is_managed_path(p)) {
-                    a.defer(Deferred::Recycle(p));
-                }
-            }
             c if (CMD_SIZE..CMD_SIZE + SIZES.len()).contains(&c) => {
                 let size = SIZES[c - CMD_SIZE].0;
                 a.update_panel(i, |p| p.icon_size = size);
@@ -281,6 +234,8 @@ pub fn panel_menu(id: &str, kind: MenuKind) {
                 let sort = SORTS[c - CMD_SORT].0;
                 a.update_panel(i, |p| p.sort_by = sort);
             }
+            CMD_PASTE => a.defer(Deferred::Paste(id.to_string())),
+            CMD_NEW_FOLDER => a.new_folder(i),
             CMD_OPEN_FOLDER => {
                 if let Some(p) = a.config_of(i) {
                     let dir = PathBuf::from(&p.folder_path);
@@ -294,14 +249,74 @@ pub fn panel_menu(id: &str, kind: MenuKind) {
             CMD_LOCK => a.set_locked(!a.store.config().locked),
             CMD_APP_SETTINGS => a.open_app_settings(),
             CMD_DELETE => a.defer(Deferred::DeletePanel(id.to_string())),
-            c if c >= CMD_TO_PANEL && c - CMD_TO_PANEL < others.len() => {
-                let target = &others[c - CMD_TO_PANEL].0;
-                let dest = a.store.panel(target).map(|p| PathBuf::from(&p.folder_path));
-                if let (Some(p), Some(dest)) = (item, dest) {
-                    a.move_item_to(&p, &dest);
-                }
-            }
             _ => {}
+        }
+    });
+    run_deferred();
+}
+
+/// The app's own items at the end of the shell's item menu.
+const X_LOCATION: usize = shellmenu::EXTRA_BASE;
+const X_TO_DESKTOP: usize = shellmenu::EXTRA_BASE + 1;
+const X_TO_PANEL: usize = shellmenu::EXTRA_BASE + 2; // + panel index
+
+/// The shell's context menu for items (Open with, Send to, Cut, Copy,
+/// Delete, Properties, shell extensions), plus "Move to" a panel or the desktop.
+fn item_menu(id: &str, paths: Vec<PathBuf>, at: Option<POINT>) {
+    let Some((hwnd, others)) = with_app(|a| {
+        let i = a.panel_by_id(id)?;
+        let others: Vec<(String, String)> = a
+            .store
+            .config()
+            .panels
+            .iter()
+            .filter(|o| o.id != id)
+            .map(|o| {
+                let title = if o.title.is_empty() { "(untitled)".into() } else { o.title.clone() };
+                (o.id.clone(), title)
+            })
+            .collect();
+        Some((a.panels[i].hwnd, others))
+    })
+    .flatten() else {
+        return;
+    };
+    let mut to = vec![Item::cmd(X_TO_DESKTOP, "Desktop")];
+    if !others.is_empty() {
+        to.push(Item::Sep);
+    }
+    to.extend(others.iter().enumerate().map(|(n, (_, t))| Item::cmd(X_TO_PANEL + n, t)));
+    let extra = [Item::cmd(X_LOCATION, "Show in panel folder"), Item::Sub("Move to".into(), to)];
+    let at = at.unwrap_or_else(cursor);
+    // Shift+right-click shows the extra verbs, as in Explorer.
+    let extended = shift_down();
+    let choice = shellmenu::show(hwnd, &paths, &extra, at, extended);
+    with_app(|a| {
+        let Some(i) = a.panel_by_id(id) else { return };
+        let dest = match choice {
+            Choice::Rename => {
+                if let Some(p) = paths.first() {
+                    a.start_edit(i, EditTarget::Item(p.clone()));
+                }
+                return;
+            }
+            Choice::Extra(X_LOCATION) => {
+                if let Some(p) = paths.first().filter(|p| a.is_managed_path(p)) {
+                    crate::win::shell::show_in_folder(p);
+                }
+                return;
+            }
+            Choice::Extra(X_TO_DESKTOP) => Some(a.desktop_dir.clone()),
+            Choice::Extra(c) if c >= X_TO_PANEL && c - X_TO_PANEL < others.len() => {
+                a.store.panel(&others[c - X_TO_PANEL].0).map(|p| PathBuf::from(&p.folder_path))
+            }
+            // The folder watch picks up whatever a shell command changed.
+            _ => None,
+        };
+        if let Some(dest) = dest {
+            for p in &paths {
+                a.move_item_to(p, &dest);
+            }
         }
     });
     run_deferred();
@@ -321,7 +336,9 @@ fn drop_enter(hwnd: HWND, paths: Vec<PathBuf>) -> bool {
         let Some(i) = a.panel_index(hwnd) else { return false };
         // This panel's own item, dragged to a new spot.
         let own = match (&a.dragging, paths.as_slice()) {
-            (Some((id, dragged)), [one]) if id == &a.panels[i].id && dragged == one => {
+            (Some((id, dragged)), [one])
+                if id == &a.panels[i].id && dragged.as_slice() == [one.clone()] =>
+            {
                 one.file_name().map(|n| n.to_string_lossy().into_owned())
             }
             _ => None,
@@ -444,6 +461,10 @@ fn ctrl_down() -> bool {
     (unsafe { GetKeyState(VK_CONTROL.0 as i32) }) < 0
 }
 
+fn shift_down() -> bool {
+    (unsafe { GetKeyState(VK_SHIFT.0 as i32) }) < 0
+}
+
 fn cursor() -> POINT {
     let mut p = POINT::default();
     unsafe {
@@ -464,6 +485,10 @@ extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRE
             pos.hwndInsertAfter = HWND_BOTTOM;
         }
         return LRESULT(0);
+    }
+    // While the shell's item menu is open, its submenus need these.
+    if let Some(r) = shellmenu::handle_menu_msg(msg, w, l) {
+        return r;
     }
     let handled = with_app(|a| {
         let i = a.panel_index(hwnd)?;
@@ -489,6 +514,221 @@ fn item_at(a: &App, i: usize, cell: usize) -> Option<(String, PathBuf)> {
         .map(|it| (it.file_name.clone(), it.path.clone()))
 }
 
+/// Panel `i`'s items in the order they show: (cell, lower-cased name, path).
+/// A collapsed panel numbers them in list order.
+fn shown_order(a: &App, i: usize) -> Vec<(usize, String, PathBuf)> {
+    let Some(cfg) = a.config_of(i) else { return Vec::new() };
+    let panel = &a.panels[i];
+    let grid = current_layout(cfg, panel).grid;
+    let cells = grid.map(|g| cells_of(cfg, &panel.items, g.cols));
+    let mut order: Vec<(usize, String, PathBuf)> = panel
+        .items
+        .iter()
+        .enumerate()
+        .map(|(n, it)| {
+            let cell = cells.as_ref().and_then(|c| c.get(&it.file_name).copied()).unwrap_or(n);
+            (cell, it.file_name.to_lowercase(), it.path.clone())
+        })
+        .collect();
+    order.sort_by_key(|o| o.0);
+    order
+}
+
+/// The selected items' paths, in the order they show.
+fn selected_paths(a: &App, i: usize) -> Vec<PathBuf> {
+    let selected = &a.panels[i].selected;
+    shown_order(a, i).into_iter().filter(|o| selected.contains(&o.1)).map(|o| o.2).collect()
+}
+
+/// Selects the items from `from` to `to` (lower-cased names) as they show;
+/// `add` keeps what was already selected.
+fn select_range(a: &mut App, i: usize, from: &str, to: &str, add: bool) {
+    let order = shown_order(a, i);
+    let at = |k: &str| order.iter().position(|o| o.1 == k);
+    let (Some(x), Some(y)) = (at(from), at(to)) else { return };
+    let panel = &mut a.panels[i];
+    if !add {
+        panel.selected.clear();
+    }
+    panel.selected.extend(order[x.min(y)..=x.max(y)].iter().map(|o| o.1.clone()));
+}
+
+/// A click on an item: Ctrl toggles it, Shift selects the run from the last
+/// clicked item, a plain click selects it (keeping a selection it's part of,
+/// so the whole selection can be dragged).
+fn click_item(a: &mut App, i: usize, name: &str) {
+    let k = name.to_lowercase();
+    let anchor = a.panels[i].anchor.clone();
+    match anchor {
+        Some(from) if shift_down() => select_range(a, i, &from, &k, ctrl_down()),
+        _ => {
+            let panel = &mut a.panels[i];
+            if ctrl_down() {
+                if !panel.selected.remove(&k) {
+                    panel.selected.insert(k.clone());
+                }
+            } else if !panel.selected.contains(&k) {
+                panel.selected = [k.clone()].into();
+            }
+            panel.anchor = Some(k.clone());
+        }
+    }
+    a.panels[i].focus = Some(k);
+}
+
+/// Scrolls panel `i` so the item in `cell` is in view.
+fn scroll_into_view(a: &mut App, i: usize, cell: usize) {
+    let Some(cfg) = a.config_of(i).cloned() else { return };
+    let panel = &a.panels[i];
+    let Some(g) = current_layout(&cfg, panel).grid else { return };
+    let used = cells_of(&cfg, &panel.items, g.cols).values().max().map_or(0, |m| m + 1);
+    let t = g.tile(cell, panel.scroll);
+    let mut scroll = panel.scroll;
+    if t.y < g.area.y {
+        scroll -= g.area.y - t.y;
+    } else if t.bottom() > g.area.bottom() {
+        scroll += t.bottom() - g.area.bottom();
+    }
+    a.panels[i].scroll = scroll.clamp(0.0, g.max_scroll(used));
+}
+
+/// Arrow keys, Home and End move the selection, as in Explorer; with Shift
+/// they extend it from the last clicked item.
+fn move_focus(a: &mut App, i: usize, key: u16) -> bool {
+    let order = shown_order(a, i);
+    let Some(last) = order.len().checked_sub(1) else { return true };
+    let cols =
+        a.config_of(i).and_then(|c| current_layout(c, &a.panels[i]).grid).map_or(1, |g| g.cols);
+    let cur = a.panels[i].focus.as_ref().and_then(|f| order.iter().position(|o| &o.1 == f));
+    let target = match (key, cur) {
+        (k, _) if k == VK_HOME.0 => 0,
+        (k, _) if k == VK_END.0 => last,
+        (_, None) => 0,
+        (k, Some(c)) if k == VK_LEFT.0 => c.saturating_sub(1),
+        (k, Some(c)) if k == VK_RIGHT.0 => (c + 1).min(last),
+        (k, Some(c)) if k == VK_UP.0 => match order[c].0.checked_sub(cols) {
+            Some(up) => order.iter().rposition(|o| o.0 <= up).unwrap_or(c),
+            None => c,
+        },
+        (k, Some(c)) if k == VK_DOWN.0 => {
+            let down = order[c].0 + cols;
+            order.iter().position(|o| o.0 >= down).unwrap_or(c)
+        }
+        _ => return false,
+    };
+    let k = order[target].1.clone();
+    if shift_down() {
+        let from = a.panels[i].anchor.clone().or_else(|| cur.map(|c| order[c].1.clone()));
+        select_range(a, i, from.as_deref().unwrap_or(&k), &k, false);
+    } else {
+        a.panels[i].selected = [k.clone()].into();
+        a.panels[i].anchor = Some(k.clone());
+    }
+    a.panels[i].focus = Some(k);
+    scroll_into_view(a, i, order[target].0);
+    a.paint(i);
+    true
+}
+
+/// Where a menu opened from the keyboard goes: by the focused item, or the
+/// panel's top-left corner.
+fn keyboard_menu_point(a: &App, i: usize) -> POINT {
+    let panel = &a.panels[i];
+    let s = panel.scale;
+    let fallback =
+        POINT { x: panel.rect.left + (20.0 * s) as i32, y: panel.rect.top + (40.0 * s) as i32 };
+    let Some(cfg) = a.config_of(i) else { return fallback };
+    let Some(g) = current_layout(cfg, panel).grid else { return fallback };
+    let cells = cells_of(cfg, &panel.items, g.cols);
+    let focus = panel.focus.as_ref();
+    let item = panel.items.iter().find(|it| Some(&it.file_name.to_lowercase()) == focus);
+    match item.and_then(|it| cells.get(&it.file_name)) {
+        Some(&cell) => {
+            let (x, y) = g.tile(cell, panel.scroll).center();
+            POINT { x: panel.rect.left + (x * s) as i32, y: panel.rect.top + (y * s) as i32 }
+        }
+        None => fallback,
+    }
+}
+
+/// The context menu key or Shift+F10: the menu for the selection, or the
+/// panel's background menu.
+fn open_keyboard_menu(a: &mut App, i: usize) -> bool {
+    let selected = selected_paths(a, i);
+    let kind = if selected.is_empty() { MenuKind::Background } else { MenuKind::Items(selected) };
+    let at = Some(keyboard_menu_point(a, i));
+    a.defer(Deferred::Menu { panel: a.panels[i].id.clone(), kind, at });
+    true
+}
+
+/// Explorer's keyboard shortcuts for a panel's items. `alt` is set for
+/// WM_SYSKEYDOWN (Alt or F10). Returns whether the key was used.
+fn handle_key(a: &mut App, i: usize, key: u16, alt: bool) -> bool {
+    let id = a.panels[i].id.clone();
+    let (ctrl, shift) = (ctrl_down(), shift_down());
+    let selected = selected_paths(a, i);
+    let has = !selected.is_empty();
+    match key {
+        k if k == VK_RETURN.0 && alt => {
+            if has {
+                a.defer(Deferred::Verb { panel: id, paths: selected, verb: "properties" });
+            }
+        }
+        k if alt => return k == VK_F10.0 && shift && open_keyboard_menu(a, i),
+        k if k == VK_RETURN.0 => {
+            for p in selected {
+                a.open_item(&p);
+            }
+        }
+        k if k == VK_F2.0 => {
+            if selected.len() == 1 {
+                a.start_edit(i, EditTarget::Item(selected[0].clone()));
+            }
+        }
+        k if k == VK_F5.0 => {
+            a.refresh_items(i);
+            a.paint(i);
+        }
+        k if k == VK_ESCAPE.0 => {
+            a.panels[i].selected.clear();
+            a.paint(i);
+        }
+        k if k == VK_DELETE.0 || (ctrl && k == b'D' as u16) => {
+            // Shift+Delete too: the app never deletes outright, only recycles.
+            if has {
+                a.defer(Deferred::Recycle(selected));
+            }
+        }
+        k if ctrl && shift && k == b'C' as u16 => {
+            if has {
+                shellmenu::copy_as_path(a.panels[i].hwnd, &selected);
+            }
+        }
+        k if ctrl && shift && k == b'N' as u16 => a.new_folder(i),
+        k if ctrl && k == b'A' as u16 => {
+            let all = a.panels[i].items.iter().map(|it| it.file_name.to_lowercase()).collect();
+            a.panels[i].selected = all;
+            a.paint(i);
+        }
+        k if ctrl && k == b'C' as u16 => {
+            if has {
+                a.defer(Deferred::Verb { panel: id, paths: selected, verb: "copy" });
+            }
+        }
+        k if ctrl && k == b'X' as u16 => {
+            if has {
+                a.defer(Deferred::Verb { panel: id, paths: selected, verb: "cut" });
+            }
+        }
+        k if ctrl && k == b'V' as u16 => a.defer(Deferred::Paste(id)),
+        k if [VK_LEFT.0, VK_RIGHT.0, VK_UP.0, VK_DOWN.0, VK_HOME.0, VK_END.0].contains(&k) => {
+            return move_focus(a, i, k);
+        }
+        _ => return false,
+    }
+    true
+}
+
 fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
     let hwnd = a.panels[i].hwnd;
     let cfg = a.config_of(i)?.clone();
@@ -507,15 +747,7 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
                 Hit::TitleText | Hit::TitleBar => (!locked).then_some(Press::Title(at)),
                 Hit::Cell(cell) => match item_at(a, i, cell) {
                     Some((name, _)) => {
-                        let k = name.to_lowercase();
-                        let panel = &mut a.panels[i];
-                        if ctrl_down() {
-                            if !panel.selected.remove(&k) {
-                                panel.selected.insert(k);
-                            }
-                        } else if !panel.selected.contains(&k) {
-                            panel.selected = [k].into();
-                        }
+                        click_item(a, i, &name);
                         Some(Press::Item(at, name))
                     }
                     None => {
@@ -554,11 +786,16 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
                     unsafe {
                         let _ = ReleaseCapture();
                     }
+                    // The whole selection goes when a selected item is dragged.
                     let path = Path::new(&cfg.folder_path).join(&name);
-                    // A drop on the desktop copies the item there; that copy isn't new.
-                    a.ignore_on_desktop(&path, 120_000);
-                    a.dragging = Some((cfg.id.clone(), path.clone()));
-                    a.defer(Deferred::DragOut { panel: cfg.id.clone(), path });
+                    let selected = selected_paths(a, i);
+                    let paths = if selected.contains(&path) { selected } else { vec![path] };
+                    for p in &paths {
+                        // A drop on the desktop copies the item there; that copy isn't new.
+                        a.ignore_on_desktop(p, 120_000);
+                    }
+                    a.dragging = Some((cfg.id.clone(), paths.clone()));
+                    a.defer(Deferred::DragOut { panel: cfg.id.clone(), paths });
                     return Some(LRESULT(0));
                 }
                 _ => {}
@@ -608,6 +845,11 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
                     let path = Path::new(&cfg.folder_path).join(name);
                     a.open_item(&path);
                 }
+                // A plain click on a selected item, not dragged: just that item.
+                Some(Press::Item(_, name)) if !ctrl_down() && !shift_down() => {
+                    a.panels[i].selected = [name.to_lowercase()].into();
+                    a.paint(i);
+                }
                 _ => {}
             }
             Some(LRESULT(0))
@@ -631,23 +873,31 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
             let kind = match panel::hit(&cfg, &a.panels[i], locked, x, y) {
                 Hit::TitleText | Hit::TitleBar | Hit::Chevron | Hit::Gear => MenuKind::Title,
                 Hit::Cell(cell) => match item_at(a, i, cell) {
-                    Some((name, path)) => {
+                    Some((name, _)) => {
+                        // Right-clicking outside the selection selects just that item.
                         let k = name.to_lowercase();
                         if !a.panels[i].selected.contains(&k) {
-                            a.panels[i].selected = [k].into();
-                            a.paint(i);
+                            a.panels[i].selected = [k.clone()].into();
+                            a.panels[i].anchor = Some(k.clone());
                         }
-                        MenuKind::Item(path)
+                        a.panels[i].focus = Some(k);
+                        a.paint(i);
+                        MenuKind::Items(selected_paths(a, i))
                     }
                     None => MenuKind::Background,
                 },
                 Hit::Peek(n) => match a.panels[i].items.get(n) {
-                    Some(it) => MenuKind::Item(it.path.clone()),
+                    Some(it) => MenuKind::Items(vec![it.path.clone()]),
                     None => MenuKind::Background,
                 },
                 Hit::Resize(_) | Hit::Body => MenuKind::Background,
             };
-            a.defer(Deferred::Menu { panel: cfg.id.clone(), kind });
+            a.defer(Deferred::Menu { panel: cfg.id.clone(), kind, at: None });
+            Some(LRESULT(0))
+        }
+        // The context menu key or Shift+F10 (LPARAM -1: not from the mouse).
+        WM_CONTEXTMENU if l.0 == -1 => {
+            open_keyboard_menu(a, i);
             Some(LRESULT(0))
         }
         WM_CAPTURECHANGED => {
@@ -688,29 +938,9 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
             unsafe { SetCursor(LoadCursorW(None, id).ok()) };
             Some(LRESULT(1))
         }
-        WM_KEYDOWN => {
-            let key = w.0 as u16;
-            let panel = &mut a.panels[i];
-            let selected: Vec<PathBuf> = panel
-                .items
-                .iter()
-                .filter(|it| panel.is_selected(it))
-                .map(|it| it.path.clone())
-                .collect();
-            if key == VK_RETURN.0 {
-                for p in selected {
-                    a.open_item(&p);
-                }
-            } else if key == VK_F2.0 && selected.len() == 1 {
-                a.start_edit(i, EditTarget::Item(selected[0].clone()));
-            } else if key == VK_ESCAPE.0 {
-                panel.selected.clear();
-                a.paint(i);
-            } else if key == b'A' as u16 && ctrl_down() {
-                panel.selected = panel.items.iter().map(|it| it.file_name.to_lowercase()).collect();
-                a.paint(i);
-            }
-            Some(LRESULT(0))
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let used = handle_key(a, i, w.0 as u16, msg == WM_SYSKEYDOWN);
+            used.then_some(LRESULT(0))
         }
         WM_ACTIVATE => {
             // Back to the bottom once another window takes over.

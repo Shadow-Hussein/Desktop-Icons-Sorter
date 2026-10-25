@@ -29,8 +29,14 @@ impl Item {
 }
 
 fn build(items: &[Item]) -> HMENU {
+    let menu = unsafe { CreatePopupMenu() }.unwrap_or_default();
+    append(menu, items);
+    menu
+}
+
+/// Adds `items` to the end of an existing menu.
+pub fn append(menu: HMENU, items: &[Item]) {
     unsafe {
-        let menu = CreatePopupMenu().unwrap_or_default();
         for item in items {
             let _ = match item {
                 Item::Cmd(id, label) => {
@@ -47,16 +53,21 @@ fn build(items: &[Item]) -> HMENU {
                 }
             };
         }
-        menu
     }
 }
 
-/// Shows the menu at the cursor; returns the chosen id, or 0 when dismissed.
-pub fn show(items: &[Item], owner: HWND) -> usize {
+/// Shows the menu at `at` (screen pixels) or the cursor; returns the chosen
+/// id, or 0 when dismissed.
+pub fn show(items: &[Item], owner: HWND, at: Option<POINT>) -> usize {
     let menu = build(items);
     let mut pt = POINT::default();
     unsafe {
-        let _ = GetCursorPos(&mut pt);
+        match at {
+            Some(p) => pt = p,
+            None => {
+                let _ = GetCursorPos(&mut pt);
+            }
+        }
         // Without this the menu doesn't close when clicking elsewhere.
         let _ = SetForegroundWindow(owner);
         let flags = TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY;

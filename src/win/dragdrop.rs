@@ -2,7 +2,7 @@
 //! dragged out as real shell items, so Explorer, the desktop and other
 //! panels can all take them.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use windows::Win32::Foundation::{HWND, POINTL};
 use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL};
@@ -11,12 +11,8 @@ use windows::Win32::System::Ole::{
     IDropSource, IDropTarget, IDropTarget_Impl, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
 };
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
-use windows::Win32::UI::Shell::{
-    BHID_DataObject, DragQueryFileW, HDROP, IShellItem, SHCreateItemFromParsingName, SHDoDragDrop,
-};
+use windows::Win32::UI::Shell::{DragQueryFileW, HDROP, SHDoDragDrop};
 use windows::core::{Ref, Result, implement};
-
-use super::Wide;
 
 /// What a panel's drop target reports to the app.
 #[derive(Clone, Copy)]
@@ -132,21 +128,13 @@ pub fn effect_for(move_items: bool, allowed: DROPEFFECT) -> DROPEFFECT {
     }
 }
 
-/// Drags an item out as a shell item, with the shell's own drag image. Runs a
-/// modal loop until the drop. Copy or link only: a drag never takes an item
-/// out of its panel by surprise ("Move to" in its menu does that).
-pub fn drag_out(hwnd: HWND, path: &Path) {
-    let p = Wide::os(path.as_os_str());
-    unsafe {
-        let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(p.pcwstr(), None) else {
-            return;
-        };
-        let Ok(data) = item.BindToHandler::<_, IDataObject>(None, &BHID_DataObject) else { return };
-        let _ = SHDoDragDrop(
-            Some(hwnd),
-            &data,
-            None::<&IDropSource>,
-            DROPEFFECT_COPY | DROPEFFECT_LINK,
-        );
-    }
+/// Drags items (which share a folder) out as shell items, with the shell's
+/// own drag image. Runs a modal loop until the drop. Copy or link only: a
+/// drag never takes an item out of its panel by surprise ("Move to" in its
+/// menu does that).
+pub fn drag_out(hwnd: HWND, paths: &[PathBuf]) {
+    let Some(data) = super::shellmenu::data_object(hwnd, paths) else { return };
+    let _ = unsafe {
+        SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_LINK)
+    };
 }

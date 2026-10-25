@@ -107,6 +107,10 @@ pub struct Panel {
     pub scroll: f32,
     /// Selected items' file names, lower-cased.
     pub selected: HashSet<String>,
+    /// The item the keyboard is on (lower-cased name).
+    pub focus: Option<String>,
+    /// Where a Shift+click or Shift+arrow selection starts (lower-cased name).
+    pub anchor: Option<String>,
     pub hover: Option<Hit>,
     /// The mouse is over the panel (shows the gear and a minimal bar's chevron).
     pub inside: bool,
@@ -132,6 +136,8 @@ impl Panel {
             items: Vec::new(),
             scroll: 0.0,
             selected: HashSet::new(),
+            focus: None,
+            anchor: None,
             hover: None,
             inside: false,
             pointer: None,

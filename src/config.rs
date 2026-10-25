@@ -38,6 +38,21 @@ pub fn user_data_dir() -> PathBuf {
     appdata.join("desktop-icons-sorter")
 }
 
+/// Tells instances apart: empty for the normal profile, a short hash of the
+/// folder for a throwaway one (`DESKTOP_SORTER_USER_DATA`). One instance runs
+/// per profile, so a test profile can run next to the real one.
+pub fn instance_suffix() -> String {
+    if std::env::var_os("DESKTOP_SORTER_USER_DATA").is_none() {
+        return String::new();
+    }
+    // FNV-1a: stable across builds, unlike the standard library's hasher.
+    let path = user_data_dir().to_string_lossy().to_lowercase();
+    let hash = path
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    format!(".{hash:016x}")
+}
+
 /// Parent folder for new panels' folders.
 pub fn panels_root_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("DESKTOP_SORTER_PANELS_DIR") {

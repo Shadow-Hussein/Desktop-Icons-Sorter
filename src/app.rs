@@ -21,7 +21,7 @@ use sorter::geometry::clamp_to_work_areas;
 use sorter::grid::{layout_grid, place_at};
 use sorter::model::{AddMode, Bounds, MAX_PANEL_ITEMS, PanelConfig, PlacedItem, SortBy};
 use sorter::stack::stack_move;
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR, w};
@@ -35,7 +35,7 @@ use crate::win::icons::{IconCache, Lookup};
 use crate::win::render::{Font, Gfx};
 use crate::win::tray::Tray;
 use crate::win::watch::{DirWatch, Report};
-use crate::win::{Wide, desktop_layer, dialogs, dragdrop, now_ms, shell};
+use crate::win::{Wide, desktop_layer, dialogs, dragdrop, now_ms, shell, shellmenu};
 
 pub const WM_APP_TRAY: u32 = WM_APP + 1;
 /// Sent by a second instance: show the panels.
@@ -63,16 +63,45 @@ pub const FRAME_MS: u32 = 15;
 
 /// Modal work queued by a handler (see the module docs).
 pub enum Deferred {
-    Error { title: String, text: String },
+    Error {
+        title: String,
+        text: String,
+    },
     Open(PathBuf),
     TrayMenu,
-    Menu { panel: String, kind: MenuKind },
-    DragOut { panel: String, path: PathBuf },
-    Recycle(PathBuf),
+    /// A panel menu at `at` (screen pixels), or at the cursor.
+    Menu {
+        panel: String,
+        kind: MenuKind,
+        at: Option<POINT>,
+    },
+    DragOut {
+        panel: String,
+        paths: Vec<PathBuf>,
+    },
+    Recycle(Vec<PathBuf>),
+    /// A shell verb ("copy", "cut", "properties") on a panel's items.
+    Verb {
+        panel: String,
+        paths: Vec<PathBuf>,
+        verb: &'static str,
+    },
+    /// Paste the clipboard's files into a panel.
+    Paste(String),
     DeletePanel(String),
-    ChooseColor { owner: HWND, panel: String, layer: Layer },
-    ChooseFolder { owner: HWND, panel: String },
-    SortMenu { owner: HWND, panel: String },
+    ChooseColor {
+        owner: HWND,
+        panel: String,
+        layer: Layer,
+    },
+    ChooseFolder {
+        owner: HWND,
+        panel: String,
+    },
+    SortMenu {
+        owner: HWND,
+        panel: String,
+    },
     Quit,
 }
 
@@ -80,7 +109,8 @@ pub enum Deferred {
 pub enum MenuKind {
     Title,
     Background,
-    Item(PathBuf),
+    /// The shell's menu for these items (the selection, or the one clicked).
+    Items(Vec<PathBuf>),
 }
 
 /// What a rename box is renaming.
@@ -103,8 +133,8 @@ pub struct App {
     pub mons: Vec<Monitor>,
     deferred: VecDeque<Deferred>,
     pub taskbar_created: u32,
-    /// An item being dragged out of a panel: (panel id, path).
-    pub dragging: Option<(String, PathBuf)>,
+    /// Items being dragged out of a panel: (panel id, paths).
+    pub dragging: Option<(String, Vec<PathBuf>)>,
     edit: Option<(EditBox, EditTarget)>,
     pub settings: Vec<SettingsWin>,
     /// Watches the desktop while a panel catches new items.
@@ -151,14 +181,14 @@ fn execute(d: Deferred) {
             }
         }
         Deferred::TrayMenu => procs::tray_menu(),
-        Deferred::Menu { panel, kind } => procs::panel_menu(&panel, kind),
-        Deferred::DragOut { panel, path } => {
+        Deferred::Menu { panel, kind, at } => procs::panel_menu(&panel, kind, at),
+        Deferred::DragOut { panel, paths } => {
             let Some(hwnd) =
                 with_app(|a| a.panel_by_id(&panel).map(|i| a.panels[i].hwnd)).flatten()
             else {
                 return;
             };
-            dragdrop::drag_out(hwnd, &path);
+            dragdrop::drag_out(hwnd, &paths);
             with_app(|a| {
                 a.dragging = None;
                 if let Some(i) = a.panel_by_id(&panel) {
@@ -167,9 +197,51 @@ fn execute(d: Deferred) {
                 }
             });
         }
-        Deferred::Recycle(path) => {
-            if let Err(e) = shell::recycle(&path) {
-                shell::error_box(None, "Could not delete item", &e);
+        Deferred::Recycle(paths) => {
+            let errors: Vec<String> = paths
+                .iter()
+                .filter_map(|p| {
+                    shell::recycle(p).err().map(|e| {
+                        format!(
+                            "{}
+  {e}",
+                            p.display()
+                        )
+                    })
+                })
+                .collect();
+            if !errors.is_empty() {
+                shell::error_box(
+                    None,
+                    "Could not delete item",
+                    &errors.join(
+                        "
+
+",
+                    ),
+                );
+            }
+        }
+        Deferred::Verb { panel, paths, verb } => {
+            let Some(hwnd) =
+                with_app(|a| a.panel_by_id(&panel).map(|i| a.panels[i].hwnd)).flatten()
+            else {
+                return;
+            };
+            if let Err(e) = shellmenu::run_verb(hwnd, &paths, verb) {
+                shell::error_box(Some(hwnd), "Could not do that", &e);
+            }
+        }
+        Deferred::Paste(panel) => {
+            let Some((hwnd, dir)) = with_app(|a| {
+                let i = a.panel_by_id(&panel)?;
+                Some((a.panels[i].hwnd, PathBuf::from(&a.config_of(i)?.folder_path)))
+            })
+            .flatten() else {
+                return;
+            };
+            if let Err(e) = shellmenu::paste_into(hwnd, &dir) {
+                shell::error_box(Some(hwnd), "Could not paste", &e);
             }
         }
         Deferred::DeletePanel(id) => delete_panel_flow(&id),
@@ -910,6 +982,25 @@ impl App {
             if let Some(parent) = path.parent() {
                 self.refresh_folder(parent);
             }
+        }
+    }
+
+    /// Makes a "New folder" in panel `i` and starts renaming it (Ctrl+Shift+N).
+    pub fn new_folder(&mut self, i: usize) {
+        let Some(cfg) = self.config_of(i).cloned() else { return };
+        let made = folder::unique_destination(Path::new(&cfg.folder_path), "New folder")
+            .and_then(|p| std::fs::create_dir(&p).map(|_| p));
+        match made {
+            Ok(path) => {
+                self.refresh_items(i);
+                let k = file_name(&path).to_lowercase();
+                let panel = &mut self.panels[i];
+                panel.selected = [k.clone()].into();
+                (panel.focus, panel.anchor) = (Some(k.clone()), Some(k));
+                self.paint(i);
+                self.start_edit(i, EditTarget::Item(path));
+            }
+            Err(e) => self.error("Could not create a folder", &e.to_string()),
         }
     }
 

@@ -1385,7 +1385,7 @@ pub fn sort_menu(owner: HWND, panel: &str) {
     ];
     let items: Vec<Item> =
         sorts.iter().enumerate().map(|(n, (v, l))| Item::check(n + 1, l, *v == current)).collect();
-    let cmd = menu::show(&items, owner);
+    let cmd = menu::show(&items, owner, None);
     if (1..=sorts.len()).contains(&cmd) {
         let v = sorts[cmd - 1].0;
         with_app(|a| {

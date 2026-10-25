@@ -10,6 +10,7 @@ pub mod icons;
 pub mod menu;
 pub mod render;
 pub mod shell;
+pub mod shellmenu;
 pub mod tray;
 pub mod watch;
 

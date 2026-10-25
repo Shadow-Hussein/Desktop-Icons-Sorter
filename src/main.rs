@@ -10,19 +10,21 @@ mod win;
 use sorter::config::{ConfigStore, config_path};
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
-use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+use windows::Win32::System::Ole::{OleFlushClipboard, OleInitialize, OleUninitialize};
 use windows::Win32::System::Threading::{CreateMutexW, INFINITE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, FindWindowW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
     PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, TranslateMessage, WM_QUIT,
 };
-use windows::core::{PCWSTR, w};
 
 fn main() {
-    // One instance: a second launch shows the first one's panels and exits.
-    let _instance = unsafe { CreateMutexW(None, true, w!("Local\\DesktopIconsSorter.Instance")) };
+    // One instance per profile: a second launch shows the first one's panels and exits.
+    let suffix = sorter::config::instance_suffix();
+    let mutex = win::Wide::new(&format!("Local\\DesktopIconsSorter.Instance{suffix}"));
+    let host_title = win::Wide::new(&format!("Desktop Icons Sorter{suffix}"));
+    let _instance = unsafe { CreateMutexW(None, true, mutex.pcwstr()) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        if let Ok(host) = unsafe { FindWindowW(app::HOST_CLASS, PCWSTR::null()) } {
+        if let Ok(host) = unsafe { FindWindowW(app::HOST_CLASS, host_title.pcwstr()) } {
             let _ = unsafe { PostMessageW(Some(host), app::WM_APP_SHOW, WPARAM(0), LPARAM(0)) };
         }
         return;
@@ -34,7 +36,7 @@ fn main() {
     }
     procs::register_classes();
     settings::register_class();
-    let host = procs::create_host();
+    let host = procs::create_host(host_title.pcwstr());
     let path = config_path();
     let first_run = !path.exists();
     let store = ConfigStore::load(path);
@@ -53,7 +55,11 @@ fn main() {
 
     app::with_app(|a| a.save_now());
     app::uninstall();
-    unsafe { OleUninitialize() };
+    unsafe {
+        // Leaves files copied from a panel on the clipboard after the app quits.
+        let _ = OleFlushClipboard();
+        OleUninitialize();
+    }
 }
 
 /// Waits for window messages and for the folder watches' events together.

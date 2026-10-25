@@ -29,8 +29,11 @@ Free and open source under the [MIT License](LICENSE).
 - **Starts with Windows** after a fresh install (turn it off in app settings or the tray menu). The portable exe doesn't, since it isn't installed anywhere.
 - **Item actions:**
   - double-click to open
-  - drag out to Explorer, the desktop or another panel
-  - right-click for Open file location, Rename (or F2), Move to Desktop or another panel, and Move to Recycle Bin
+  - select several with Ctrl+click, Shift+click or Shift+arrow keys
+  - drag out (one item or the whole selection) to Explorer, the desktop or another panel
+  - right-click for the Windows context menu (Open with, Send to, Cut, Copy, Delete, Rename, Properties and what other apps add; Shift+right-click for more), plus Show in panel folder and Move to Desktop or another panel
+  - Explorer's keyboard shortcuts: Enter opens, F2 renames, Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste, Delete or Ctrl+D moves to the Recycle Bin (Shift+Delete too: the app never deletes outright), Alt+Enter shows Properties, Ctrl+Shift+C copies the path, Ctrl+Shift+N makes a new folder, Ctrl+A selects all, arrow keys, Home and End move, F5 refreshes, and the context menu key or Shift+F10 opens the menu
+- **Panel background menu:** View, Sort by, Paste, New folder, Open folder in Explorer, Panel settings, New panel.
 - **Tray menu:** New panel, Show/Hide panels, Lock panels, Start with Windows, Settings…, Open config folder, Quit.
 - **Safe deletes.** Deleting a panel asks whether to move its items back to the Desktop. Files are never deleted.
 
