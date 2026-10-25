@@ -1,12 +1,10 @@
 // No console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// Shell helpers for menus, drag and drop and settings are in place ahead of
-// the features that use them. Remove once those land.
-#![allow(dead_code)]
 
 mod app;
 mod panel;
 mod procs;
+mod settings;
 mod win;
 
 use sorter::config::{ConfigStore, config_path};
@@ -35,8 +33,11 @@ fn main() {
         return;
     }
     procs::register_classes();
+    settings::register_class();
     let host = procs::create_host();
-    let store = ConfigStore::load(config_path());
+    let path = config_path();
+    let first_run = !path.exists();
+    let store = ConfigStore::load(path);
     let state = match app::App::new(store, host) {
         Ok(a) => a,
         Err(e) => {
@@ -45,7 +46,7 @@ fn main() {
         }
     };
     app::install(state);
-    app::with_app(|a| a.start());
+    app::with_app(|a| a.start(first_run));
     app::run_deferred();
 
     run_loop();

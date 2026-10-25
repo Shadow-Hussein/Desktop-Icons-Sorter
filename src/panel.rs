@@ -359,7 +359,6 @@ pub struct Scene<'a> {
     pub config: &'a PanelConfig,
     pub panel: &'a Panel,
     pub layout: &'a Layout,
-    pub locked: bool,
     /// The drop target cell while something is dragged over the grid.
     pub drop_active: bool,
     /// Cells to draw items in (custom order may differ from list order).

@@ -265,7 +265,6 @@ pub fn panel_menu(id: &str, kind: MenuKind) {
             CMD_TO_DESKTOP => {
                 if let Some(p) = item {
                     let desktop = a.desktop_dir.clone();
-                    a.ignore_on_desktop(&p);
                     a.move_item_to(&p, &desktop);
                 }
             }
@@ -556,7 +555,8 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
                         let _ = ReleaseCapture();
                     }
                     let path = Path::new(&cfg.folder_path).join(&name);
-                    a.ignore_on_desktop(&path);
+                    // A drop on the desktop copies the item there; that copy isn't new.
+                    a.ignore_on_desktop(&path, 120_000);
                     a.dragging = Some((cfg.id.clone(), path.clone()));
                     a.defer(Deferred::DragOut { panel: cfg.id.clone(), path });
                     return Some(LRESULT(0));

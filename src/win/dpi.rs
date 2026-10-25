@@ -85,9 +85,3 @@ pub fn to_physical(b: Bounds, mons: &[Monitor]) -> (RECT, f32) {
     let p = |v: i32| (v as f32 * s).round() as i32;
     (RECT { left: p(b.x), top: p(b.y), right: p(b.x + b.width), bottom: p(b.y + b.height) }, s)
 }
-
-/// A physical point in DIPs, on the monitor it's on.
-pub fn point_to_dip(p: POINT, mons: &[Monitor]) -> (f32, f32) {
-    let s = monitor_for_point(p, mons).scale;
-    (p.x as f32 / s, p.y as f32 / s)
-}

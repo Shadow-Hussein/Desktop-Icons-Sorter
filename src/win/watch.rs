@@ -2,7 +2,7 @@
 //! main loop waits on each watch's event alongside window messages, so no
 //! thread or timer is needed.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sorter::catcher::Change;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -23,7 +23,6 @@ use super::Wide;
 const BUFFER_WORDS: usize = 2048;
 
 pub struct DirWatch {
-    path: PathBuf,
     dir: HANDLE,
     event: HANDLE,
     // Boxed so their addresses stay put while the OS writes to them.
@@ -59,7 +58,6 @@ impl DirWatch {
                 return None;
             };
             let mut w = Self {
-                path: path.to_path_buf(),
                 dir,
                 event,
                 overlapped: Box::new(OVERLAPPED { hEvent: event, ..Default::default() }),
@@ -71,10 +69,6 @@ impl DirWatch {
             }
             Some(w)
         }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// The handle the main loop waits on.

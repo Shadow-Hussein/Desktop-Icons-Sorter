@@ -31,18 +31,19 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE,
     DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
-    DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_EMERGENCY_BREAK,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_EMERGENCY_BREAK,
     DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
     IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BitBlt,
     CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC,
-    HGDIOBJ, SelectObject,
+    HGDIOBJ, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow};
 use windows::core::{Result, w};
@@ -98,23 +99,21 @@ pub enum Font {
     Label,
     /// Hints like "Drag icons here": 12 px italic, centered.
     Hint,
-    /// Settings window body text: 12 px, left aligned.
+    /// Settings labels: 12 px, left aligned, wrapping.
     Body,
-    /// Settings section headings: 12 px semibold, left aligned.
+    /// Settings section headings: 10.5 px bold, left aligned.
     Heading,
     /// Settings buttons and segmented controls: 12 px, centered on one line.
     Button,
+    /// The same, semibold (a chosen segment or tile).
+    ButtonStrong,
+    /// Settings hints: 11 px, left aligned, wrapping.
+    Small,
+    /// Tile captions and value badges: 11 px, centered on one line.
+    SmallCenter,
 }
 
-struct Formats {
-    title: IDWriteTextFormat,
-    label: IDWriteTextFormat,
-    hint: IDWriteTextFormat,
-    body: IDWriteTextFormat,
-    heading: IDWriteTextFormat,
-    button: IDWriteTextFormat,
-}
-
+const FONTS: usize = 9;
 /// A DIB section selected into a memory DC, for the render target to draw into.
 struct Surface {
     dc: HDC,
@@ -166,7 +165,7 @@ pub struct Gfx {
     dwrite: IDWriteFactory,
     rt: ID2D1DCRenderTarget,
     brush: ID2D1SolidColorBrush,
-    formats: Formats,
+    formats: [IDWriteTextFormat; FONTS],
     surface: Option<Surface>,
     /// Bumped when the render target is recreated, so bitmaps made for the old one are dropped.
     pub generation: u32,
@@ -237,34 +236,27 @@ impl Gfx {
         let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let (n, c, l) =
             (DWRITE_FONT_STYLE_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING);
-        let formats = Formats {
-            title: format(&dwrite, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, n, c, false)?,
-            label: format(&dwrite, 11.5, DWRITE_FONT_WEIGHT_NORMAL, n, c, true)?,
-            hint: format(
-                &dwrite,
-                12.0,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_ITALIC,
-                c,
-                true,
-            )?,
-            body: format(&dwrite, 12.0, DWRITE_FONT_WEIGHT_NORMAL, n, l, true)?,
-            heading: format(&dwrite, 12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, n, l, false)?,
-            button: format(&dwrite, 12.0, DWRITE_FONT_WEIGHT_NORMAL, n, c, false)?,
-        };
+        let (b, sb, bold) =
+            (DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_WEIGHT_BOLD);
+        let i = DWRITE_FONT_STYLE_ITALIC;
+        // In `Font` order.
+        let formats = [
+            format(&dwrite, 12.5, sb, n, c, false)?,
+            format(&dwrite, 11.5, b, n, c, true)?,
+            format(&dwrite, 12.0, b, i, c, true)?,
+            format(&dwrite, 12.0, b, n, l, true)?,
+            format(&dwrite, 10.5, bold, n, l, false)?,
+            format(&dwrite, 12.0, b, n, c, false)?,
+            format(&dwrite, 12.0, sb, n, c, false)?,
+            format(&dwrite, 11.0, b, n, l, true)?,
+            format(&dwrite, 11.0, b, n, c, false)?,
+        ];
         let (rt, brush) = create_target(&d2d)?;
         Ok(Self { d2d, dwrite, rt, brush, formats, surface: None, generation: 0 })
     }
 
     fn text_format(&self, font: Font) -> &IDWriteTextFormat {
-        match font {
-            Font::Title => &self.formats.title,
-            Font::Label => &self.formats.label,
-            Font::Hint => &self.formats.hint,
-            Font::Body => &self.formats.body,
-            Font::Heading => &self.formats.heading,
-            Font::Button => &self.formats.button,
-        }
+        &self.formats[font as usize]
     }
 
     /// How wide and tall `text` is in `font`, laid out at most `max_w` wide.
@@ -368,8 +360,9 @@ impl Gfx {
         }
     }
 
-    /// Draws into a normal (opaque) window's DC, for the settings windows.
-    pub fn paint_dc(
+    /// Draws a normal (opaque) window's client area, `w` x `h` pixels, into
+    /// `hdc`. Drawn off screen first and copied in one go, so it never flickers.
+    pub fn paint_window(
         &mut self,
         hdc: HDC,
         w: i32,
@@ -377,22 +370,24 @@ impl Gfx {
         scale: f32,
         draw: impl FnOnce(&mut Canvas),
     ) -> Result<()> {
-        let bind = RECT { left: 0, top: 0, right: w.max(1), bottom: h.max(1) };
+        let (w, h) = (w.max(1), h.max(1));
+        let src = self.surface(w, h)?.dc;
+        let bind = RECT { left: 0, top: 0, right: w, bottom: h };
         unsafe {
-            self.rt.BindDC(hdc, &bind)?;
+            self.rt.BindDC(src, &bind)?;
             self.rt.SetDpi(96.0 * scale, 96.0 * scale);
             self.rt.BeginDraw();
             self.rt.SetTransform(&Matrix3x2::identity());
         }
         let mut canvas = Canvas { gfx: self, scale };
         draw(&mut canvas);
-        let r = unsafe { self.rt.EndDraw(None, None) };
-        if r.is_err() {
+        if let Err(e) = unsafe { self.rt.EndDraw(None, None) } {
             let (rt, brush) = create_target(&self.d2d)?;
             (self.rt, self.brush) = (rt, brush);
             self.generation += 1;
+            return Err(e);
         }
-        r
+        unsafe { BitBlt(hdc, 0, 0, w, h, Some(src), 0, 0, SRCCOPY) }
     }
 }
 

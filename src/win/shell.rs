@@ -16,9 +16,8 @@ use windows::Win32::UI::Shell::{
     SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MessageBoxW, SW_SHOWNORMAL,
+    MB_ICONERROR, MB_OK, MESSAGEBOX_STYLE, MessageBoxW, SW_SHOWNORMAL,
 };
-use windows::core::{PCWSTR, w};
 
 use super::{Wide, from_wide};
 
@@ -98,10 +97,6 @@ pub fn error_box(owner: Option<HWND>, title: &str, text: &str) {
     message(owner, title, text, MB_ICONERROR);
 }
 
-pub fn warning_box(owner: Option<HWND>, title: &str, text: &str) {
-    message(owner, title, text, MB_ICONWARNING);
-}
-
 pub fn exe_path() -> PathBuf {
     std::env::current_exe().unwrap_or_default()
 }
@@ -154,9 +149,4 @@ pub fn set_start_with_windows(on: bool) {
             let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, k.pcwstr(), v.pcwstr());
         }
     }
-}
-
-/// For calls that take an optional window title.
-pub fn app_title() -> PCWSTR {
-    w!("Desktop Icons Sorter")
 }

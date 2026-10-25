@@ -3,9 +3,9 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HMENU, MF_CHECKED, MF_GRAYED,
-    MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostMessageW, SetForegroundWindow,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, HMENU, MF_CHECKED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostMessageW, SetForegroundWindow, TPM_NONOTIFY,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
 };
 
 use super::Wide;
@@ -14,7 +14,6 @@ pub enum Item {
     Cmd(usize, String),
     /// A command with a check mark when true.
     Check(usize, String, bool),
-    Disabled(String),
     Sep,
     Sub(String, Vec<Item>),
 }
@@ -40,9 +39,6 @@ fn build(items: &[Item]) -> HMENU {
                 Item::Check(id, label, on) => {
                     let flags = MF_STRING | if *on { MF_CHECKED } else { MF_UNCHECKED };
                     AppendMenuW(menu, flags, *id, Wide::new(label).pcwstr())
-                }
-                Item::Disabled(label) => {
-                    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, Wide::new(label).pcwstr())
                 }
                 Item::Sep => AppendMenuW(menu, MF_SEPARATOR, 0, None),
                 Item::Sub(label, children) => {

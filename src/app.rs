@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
+use sorter::catcher::{self, Catcher};
 use sorter::config::{ConfigStore, SAVE_DEBOUNCE_MS, create_panel, folder_name_from_title};
 use sorter::folder::{
     self, copy_into, list_items, move_into, place_in_order, prune_cells, rename_in_cells,
@@ -27,6 +28,7 @@ use windows::core::{BOOL, PCWSTR, w};
 
 use crate::panel::{self, Anim, DropState, Panel, Scene, cells_of, current_layout, window_bounds};
 use crate::procs;
+use crate::settings::{Layer, SettingsWin};
 use crate::win::dpi::{self, Monitor};
 use crate::win::edit::{Done, EditBox};
 use crate::win::icons::{IconCache, Lookup};
@@ -48,6 +50,7 @@ pub const PANEL_CLASS: PCWSTR = w!("DesktopIconsSorter.Panel");
 
 /// Host window timers.
 pub const TIMER_SAVE: usize = 1;
+const TIMER_CATCH: usize = 2;
 /// Panel window timers.
 pub const TIMER_REFRESH: usize = 1;
 pub const TIMER_ANIM: usize = 2;
@@ -67,6 +70,9 @@ pub enum Deferred {
     DragOut { panel: String, path: PathBuf },
     Recycle(PathBuf),
     DeletePanel(String),
+    ChooseColor { owner: HWND, panel: String, layer: Layer },
+    ChooseFolder { owner: HWND, panel: String },
+    SortMenu { owner: HWND, panel: String },
     Quit,
 }
 
@@ -100,6 +106,9 @@ pub struct App {
     /// An item being dragged out of a panel: (panel id, path).
     pub dragging: Option<(String, PathBuf)>,
     edit: Option<(EditBox, EditTarget)>,
+    pub settings: Vec<SettingsWin>,
+    /// Watches the desktop while a panel catches new items.
+    catcher: Option<(Catcher, DirWatch)>,
 }
 
 thread_local! {
@@ -164,6 +173,9 @@ fn execute(d: Deferred) {
             }
         }
         Deferred::DeletePanel(id) => delete_panel_flow(&id),
+        Deferred::ChooseColor { owner, panel, layer } => choose_color_flow(owner, &panel, layer),
+        Deferred::ChooseFolder { owner, panel } => choose_folder_flow(owner, &panel),
+        Deferred::SortMenu { owner, panel } => crate::settings::sort_menu(owner, &panel),
         Deferred::Quit => unsafe { PostQuitMessage(0) },
     }
 }
@@ -206,17 +218,42 @@ impl App {
             taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
             dragging: None,
             edit: None,
+            settings: Vec::new(),
+            catcher: None,
         })
     }
 
-    pub fn start(&mut self) {
+    /// `first_run`: there was no config file yet.
+    pub fn start(&mut self, first_run: bool) {
         self.tray = Some(Tray::new(self.host, WM_APP_TRAY));
+        self.sync_start_with_windows(first_run);
         if self.store.config().panels.is_empty() {
             self.add_panel("Apps");
         }
         let ids: Vec<String> = self.store.config().panels.iter().map(|p| p.id.clone()).collect();
         for id in ids {
             self.open_panel(&id);
+        }
+        self.sync_catcher();
+    }
+
+    /// Keeps the Start with Windows entry in step with the saved setting. The
+    /// installer adds the entry, so on a first run its presence says this
+    /// copy was installed (the portable exe isn't, and doesn't start with
+    /// Windows). Dev builds and throwaway profiles leave the registry alone.
+    fn sync_start_with_windows(&mut self, first_run: bool) {
+        if cfg!(debug_assertions) || std::env::var_os("DESKTOP_SORTER_USER_DATA").is_some() {
+            return;
+        }
+        if first_run && shell::starts_with_windows() {
+            self.store.update(|c| c.start_with_windows = true);
+            self.changed();
+        }
+        if self.store.config().start_with_windows {
+            // Also points an entry the Electron app made at this exe.
+            shell::set_start_with_windows(true);
+        } else if shell::starts_with_windows() {
+            shell::set_start_with_windows(false);
         }
     }
 
@@ -228,11 +265,20 @@ impl App {
         self.defer(Deferred::Error { title: title.into(), text: text.into() });
     }
 
-    /// Saves the config a moment after the last change.
+    /// Saves the config a moment after the last change, and shows the change
+    /// in any open settings window.
     pub fn changed(&mut self) {
         if self.store.is_dirty() {
             unsafe { SetTimer(Some(self.host), TIMER_SAVE, SAVE_DEBOUNCE_MS, None) };
         }
+        self.refresh_settings();
+    }
+
+    /// Changes app-wide settings; panels show some of them (lock, stacking).
+    pub fn update_app(&mut self, f: impl FnOnce(&mut sorter::model::AppConfig)) {
+        self.store.update(f);
+        self.changed();
+        self.paint_all();
     }
 
     pub fn save_now(&mut self) {
@@ -356,6 +402,12 @@ impl App {
 
     pub fn quit(&mut self) {
         self.edit = None;
+        self.catcher = None;
+        for s in self.settings.drain(..) {
+            unsafe {
+                let _ = DestroyWindow(s.hwnd);
+            }
+        }
         while !self.panels.is_empty() {
             self.close_panel_window(0);
         }
@@ -463,7 +515,6 @@ impl App {
         }
         let title = if cfg.title.is_empty() { "Untitled" } else { &cfg.title };
         self.panels[i].title_len = self.gfx.measure(title, Font::Title, 10_000.0).0;
-        let locked = self.store.config().locked;
         let App { gfx, icons, panels, .. } = self;
         let panel = &panels[i];
         let l = current_layout(&cfg, panel);
@@ -487,7 +538,6 @@ impl App {
             config: &cfg,
             panel,
             layout: &l,
-            locked,
             drop_active: panel.drop.is_some(),
             cells: &cells,
             slot,
@@ -740,11 +790,18 @@ impl App {
         let mut errors = Vec::new();
         let mut moved = Vec::new();
         let mut any_move = false;
+        let to_desktop = same_path(dest, &self.desktop_dir);
         for src in paths {
             let c = copy(src);
             any_move |= !c;
             match if c { copy_into(src, dest) } else { move_into(src, dest) } {
-                Ok(d) => moved.push(d),
+                Ok(d) => {
+                    // Don't let the catching panel take back what the user sent to the desktop.
+                    if to_desktop {
+                        self.ignore_on_desktop(&d, catcher::IGNORE_MS);
+                    }
+                    moved.push(d)
+                }
                 Err(e) => errors.push(format!("{}\n  {e}", src.display())),
             }
         }
@@ -952,18 +1009,19 @@ impl App {
         }
     }
 
-    pub fn is_editing(&self) -> bool {
-        self.edit.is_some()
-    }
-
     // ---------------------------------------------------- waits and signals
 
     /// The handles the main loop waits on besides messages.
     pub fn wait_handles(&self) -> Vec<HANDLE> {
-        self.panels.iter().filter_map(|p| p.watch.as_ref().map(DirWatch::event)).collect()
+        let panels = self.panels.iter().filter_map(|p| p.watch.as_ref().map(DirWatch::event));
+        panels.chain(self.catcher.as_ref().map(|(_, w)| w.event())).collect()
     }
 
     pub fn on_signal(&mut self, h: HANDLE) {
+        if self.catcher.as_ref().is_some_and(|(_, w)| w.event() == h) {
+            self.desktop_changed();
+            return;
+        }
         let Some(i) =
             self.panels.iter().position(|p| p.watch.as_ref().is_some_and(|w| w.event() == h))
         else {
@@ -986,18 +1044,141 @@ impl App {
     }
 
     /// Opens panel `i`'s settings window.
-    pub fn open_settings(&mut self, _i: usize) {}
+    pub fn open_settings(&mut self, i: usize) {
+        self.open_settings_window(Some(i));
+    }
 
-    pub fn open_app_settings(&mut self) {}
-
-    /// Keeps the catching panel from taking back an item the app itself puts on the desktop.
-    pub fn ignore_on_desktop(&mut self, _path: &Path) {}
-
-    pub fn host_timer(&mut self, _id: usize) {}
+    pub fn open_app_settings(&mut self) {
+        self.open_settings_window(None);
+    }
 
     /// WM_SETTINGCHANGE: the work area or the theme may have changed.
-    pub fn settings_changed(&mut self, _l: LPARAM) {
-        self.displays_changed();
+    pub fn settings_changed(&mut self, l: LPARAM) {
+        let area = if l.0 == 0 {
+            String::new()
+        } else {
+            unsafe { PCWSTR(l.0 as *const u16).to_string() }.unwrap_or_default()
+        };
+        if area == "ImmersiveColorSet" {
+            self.theme_changed();
+        } else {
+            self.displays_changed();
+        }
+    }
+
+    // ------------------------------------------------- catching new items
+
+    /// Turns catching new desktop items on for panel `i` (and off for every
+    /// other panel: only one catches), or off.
+    pub fn set_catching(&mut self, i: usize, on: bool) {
+        let id = self.panels[i].id.clone();
+        self.store.update(|c| {
+            for p in &mut c.panels {
+                p.catch_new_items = on && p.id == id;
+            }
+        });
+        self.changed();
+        self.sync_catcher();
+    }
+
+    /// Watches the desktop only while a panel catches new items.
+    fn sync_catcher(&mut self) {
+        let catching = self.store.config().panels.iter().any(|p| p.catch_new_items);
+        if catching && self.catcher.is_none() {
+            if let Some(watch) = DirWatch::new(&self.desktop_dir) {
+                let c = Catcher::new(self.desktop_dir.clone(), catcher::SETTLE_MS);
+                self.catcher = Some((c, watch));
+            }
+        } else if !catching && self.catcher.is_some() {
+            self.catcher = None;
+            unsafe {
+                let _ = KillTimer(Some(self.host), TIMER_CATCH);
+            }
+        }
+    }
+
+    /// Something changed on the desktop: tell the catcher, and check items
+    /// once they've had time to settle.
+    fn desktop_changed(&mut self) {
+        let now = now_ms();
+        let Some((catcher, watch)) = self.catcher.as_mut() else { return };
+        match watch.read() {
+            Report::Changes(changes) => {
+                for change in changes {
+                    catcher.saw(change, now);
+                }
+            }
+            Report::Failed => {
+                self.catcher = None;
+                return;
+            }
+        }
+        self.schedule_catch();
+    }
+
+    fn schedule_catch(&mut self) {
+        let Some(due) = self.catcher.as_ref().and_then(|(c, _)| c.next_due()) else { return };
+        let wait = due.saturating_sub(now_ms()).clamp(10, u32::MAX as u64) as u32;
+        unsafe { SetTimer(Some(self.host), TIMER_CATCH, wait, None) };
+    }
+
+    pub fn host_timer(&mut self, id: usize) {
+        if id != TIMER_CATCH {
+            return;
+        }
+        unsafe {
+            let _ = KillTimer(Some(self.host), TIMER_CATCH);
+        }
+        let Some((mut catcher, watch)) = self.catcher.take() else { return };
+        catcher.run_due(now_ms(), |path| self.catch_item(path));
+        self.catcher = Some((catcher, watch));
+        self.schedule_catch();
+    }
+
+    /// Copies or moves (see `AddMode`) a new desktop item to the end of the
+    /// catching panel; false when that failed and is worth another try.
+    fn catch_item(&mut self, path: &Path) -> bool {
+        let Some(p) = self.store.config().panels.iter().find(|p| p.catch_new_items).cloned() else {
+            return true;
+        };
+        // A panel folder the user put on the desktop is not a new item.
+        if self
+            .store
+            .config()
+            .panels
+            .iter()
+            .any(|x| folder::is_inside(Path::new(&x.folder_path), path))
+        {
+            return true;
+        }
+        let dest = Path::new(&p.folder_path);
+        let added = match self.store.config().add_mode {
+            AddMode::Copy => copy_into(path, dest),
+            AddMode::Move => move_into(path, dest),
+        };
+        match added {
+            Ok(d) => {
+                let name = file_name(&d);
+                self.store
+                    .update_panel(&p.id, |x| x.order = place_in_order(&x.order, &[name], None));
+                self.changed();
+                self.refresh_folder(dest);
+                true
+            }
+            // Locked, or needs admin rights; the catcher may try again.
+            Err(e) => {
+                eprintln!("[catcher] could not add {}: {e}", path.display());
+                false
+            }
+        }
+    }
+
+    /// Keeps the catching panel from taking an item the app itself puts on
+    /// the desktop, for `ms`.
+    pub fn ignore_on_desktop(&mut self, path: &Path, ms: u64) {
+        if let Some((c, _)) = self.catcher.as_mut() {
+            c.ignore(&file_name(path), ms, now_ms());
+        }
     }
 
     // --------------------------------------------------------- delete panel
@@ -1016,7 +1197,9 @@ impl App {
         let _ = std::fs::remove_dir(&folder);
         self.store.update(|c| c.panels.retain(|x| x.id != id));
         self.changed();
+        self.close_settings_for(Some(id));
         self.close_panel_window(i);
+        self.sync_catcher();
     }
 }
 
@@ -1054,4 +1237,60 @@ fn delete_panel_flow(id: &str) {
     };
     with_app(|a| a.delete_panel(id, move_back));
     run_deferred();
+}
+
+/// Lets the user pick one of a panel's colors.
+fn choose_color_flow(owner: HWND, panel: &str, layer: Layer) {
+    let Some(current) = with_app(|a| {
+        a.store.panel(panel).map(|p| match layer {
+            Layer::Background => p.bg_color.clone(),
+            Layer::Bar => p.title_bar_color.clone(),
+            Layer::Text => p.title_text_color.clone(),
+        })
+    })
+    .flatten() else {
+        return;
+    };
+    let Some(hex) = dialogs::choose_color(Some(owner), &current) else { return };
+    with_app(|a| {
+        if let Some(i) = a.panel_by_id(panel) {
+            a.update_panel(i, |p| match layer {
+                Layer::Background => p.bg_color = hex,
+                Layer::Bar => p.title_bar_color = hex,
+                Layer::Text => p.title_text_color = hex,
+            });
+        }
+    });
+}
+
+/// Lets the user point a panel at another folder.
+fn choose_folder_flow(owner: HWND, panel: &str) {
+    let Some((current, desktop)) = with_app(|a| {
+        a.store.panel(panel).map(|p| (PathBuf::from(&p.folder_path), a.desktop_dir.clone()))
+    })
+    .flatten() else {
+        return;
+    };
+    let Some(dir) =
+        dialogs::choose_folder(Some(owner), "Choose the folder this panel shows", &current)
+    else {
+        return;
+    };
+    if same_path(&dir, &desktop) {
+        shell::error_box(
+            Some(owner),
+            "Choose another folder",
+            "A panel cannot show the Desktop folder itself.",
+        );
+        return;
+    }
+    with_app(|a| {
+        let Some(i) = a.panel_by_id(panel) else { return };
+        let folder = dir.to_string_lossy().into_owned();
+        a.update_panel(i, |p| p.folder_path = folder);
+        a.panels[i].watch = DirWatch::new(&dir);
+        a.panels[i].scroll = 0.0;
+        a.refresh_items(i);
+        a.paint(i);
+    });
 }
