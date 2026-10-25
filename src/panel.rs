@@ -2,6 +2,7 @@
 //! actions on the app.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use sorter::folder::PanelItem;
 use sorter::geometry::{
@@ -10,8 +11,8 @@ use sorter::geometry::{
 };
 use sorter::grid::layout_grid;
 use sorter::model::{
-    Bounds, CollapseDirection, HeaderShape, PanelConfig, ResizeEdge, SortBy, TitleBarStyle,
-    collapsed_length, icon_pixels,
+    Bounds, COLLAPSE_ANIMATION_MS, CollapseDirection, HeaderShape, PanelConfig, ResizeEdge, SortBy,
+    TitleBarStyle, collapsed_length, icon_pixels,
 };
 use sorter::panel_layout::{Grid, Hit, Layout, PEEK_ICON, Rect, hit_test, layout};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -59,6 +60,46 @@ pub enum Press {
     Peek(POINT, String),
 }
 
+/// Files being dragged over a panel.
+pub struct DropState {
+    pub paths: Vec<PathBuf>,
+    /// The grid cell a drop would land in, when it can be placed.
+    pub slot: Option<usize>,
+    /// This panel's own item being arranged (its file name).
+    pub own: Option<String>,
+}
+
+/// A window sliding or resizing over the collapse animation's length.
+pub struct Anim {
+    pub from: Bounds,
+    pub to: Bounds,
+    pub start: u64,
+    /// Draw the expanded look while it runs (the panel itself collapsing or expanding).
+    pub expanded_look: bool,
+}
+
+impl Anim {
+    fn progress(&self, now: u64) -> f32 {
+        ((now.saturating_sub(self.start)) as f32 / COLLAPSE_ANIMATION_MS as f32).min(1.0)
+    }
+
+    pub fn done(&self, now: u64) -> bool {
+        self.progress(now) >= 1.0
+    }
+
+    /// Where the window is at `now`, eased out like the old CSS transition.
+    pub fn at(&self, now: u64) -> Bounds {
+        let k = 1.0 - (1.0 - self.progress(now)).powi(4);
+        let lerp = |a: i32, b: i32| (a as f32 + (b - a) as f32 * k).round() as i32;
+        Bounds {
+            x: lerp(self.from.x, self.to.x),
+            y: lerp(self.from.y, self.to.y),
+            width: lerp(self.from.width, self.to.width),
+            height: lerp(self.from.height, self.to.height),
+        }
+    }
+}
+
 pub struct Panel {
     pub id: String,
     pub hwnd: HWND,
@@ -79,6 +120,8 @@ pub struct Panel {
     pub title_len: f32,
     /// A message to load missing icons is on its way.
     pub icons_queued: bool,
+    pub drop: Option<DropState>,
+    pub anim: Option<Anim>,
 }
 
 impl Panel {
@@ -98,6 +141,8 @@ impl Panel {
             scale: 1.0,
             title_len: 0.0,
             icons_queued: false,
+            drop: None,
+            anim: None,
         }
     }
 
@@ -511,6 +556,7 @@ pub fn start_pointer(
     kind: PointerKind,
     snapping: bool,
     scale: f32,
+    from: Option<POINT>,
 ) -> Option<Pointer> {
     // A collapsed tile has a fixed size.
     if matches!(kind, PointerKind::Resize(_))
@@ -519,8 +565,16 @@ pub fn start_pointer(
     {
         return None;
     }
-    let mut cursor = POINT::default();
-    unsafe { GetCursorPos(&mut cursor) }.ok()?;
+    // Measured from where the button went down, so the first few pixels
+    // (before the press counted as a drag) aren't lost.
+    let cursor = match from {
+        Some(p) => p,
+        None => {
+            let mut c = POINT::default();
+            unsafe { GetCursorPos(&mut c) }.ok()?;
+            c
+        }
+    };
     let start = window_bounds(p);
     let lines =
         snapping.then(|| SnapLines::of(others.iter().filter(|o| o.id != p.id).map(visual_bounds)));

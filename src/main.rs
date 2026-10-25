@@ -6,6 +6,7 @@
 
 mod app;
 mod panel;
+mod procs;
 mod win;
 
 use sorter::config::{ConfigStore, config_path};
@@ -33,8 +34,8 @@ fn main() {
     if unsafe { OleInitialize(None) }.is_err() {
         return;
     }
-    app::register_classes();
-    let host = app::create_host();
+    procs::register_classes();
+    let host = procs::create_host();
     let store = ConfigStore::load(config_path());
     let state = match app::App::new(store, host) {
         Ok(a) => a,

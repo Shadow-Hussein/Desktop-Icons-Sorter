@@ -326,7 +326,8 @@ impl ConfigStore {
     /// `config.bad.json` and the valid parts are kept and saved.
     pub fn load(path: PathBuf) -> Self {
         let raw = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<Value>(&text).ok(),
+            // Notepad and PowerShell can save a byte order mark; it's not part of the JSON.
+            Ok(text) => serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).ok(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Self { path, config: AppConfig::default(), dirty: false };
             }
@@ -632,6 +633,17 @@ mod tests {
         let reloaded = ConfigStore::load(file);
         assert_eq!(reloaded.config().panels.len(), 1);
         assert!(reloaded.config().panels[0].collapsed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn store_reads_a_file_with_a_byte_order_mark() {
+        let dir = temp_dir("bom");
+        let file = dir.join("config.json");
+        std::fs::write(&file, "\u{feff}{\"locked\": true}").unwrap();
+        let store = ConfigStore::load(file);
+        assert!(store.config().locked);
+        assert!(!dir.join("config.bad.json").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

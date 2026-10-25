@@ -2,8 +2,12 @@
 //! on the one UI thread.
 
 pub mod desktop_layer;
+pub mod dialogs;
 pub mod dpi;
+pub mod dragdrop;
+pub mod edit;
 pub mod icons;
+pub mod menu;
 pub mod render;
 pub mod shell;
 pub mod tray;

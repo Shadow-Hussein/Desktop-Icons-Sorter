@@ -1,6 +1,6 @@
 //! The app: config, every panel window, the tray and what they do. One
-//! instance lives in a thread-local on the UI thread; window procedures reach
-//! it through `with_app`.
+//! instance lives in a thread-local on the UI thread; window procedures (see
+//! `procs.rs`) reach it through `with_app`.
 //!
 //! Modal UI (menus, dialogs, drag and drop) runs its own message loop, which
 //! calls back into the window procedures. So it never runs while the app is
@@ -8,60 +8,80 @@
 //! has returned.
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use sorter::config::{ConfigStore, SAVE_DEBOUNCE_MS, create_panel, folder_name_from_title};
-use sorter::folder::{self, list_items, prune_cells, same_path, sync_order};
+use sorter::folder::{
+    self, copy_into, list_items, move_into, place_in_order, prune_cells, rename_in_cells,
+    rename_in_order, rename_item, same_path, sync_order,
+};
 use sorter::geometry::clamp_to_work_areas;
-use sorter::model::{Bounds, PanelConfig, SortBy};
-use sorter::panel_layout::Hit;
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use sorter::grid::{layout_grid, place_at};
+use sorter::model::{AddMode, Bounds, MAX_PANEL_ITEMS, PanelConfig, PlacedItem, SortBy};
+use sorter::stack::stack_move;
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_CONTROL, VK_ESCAPE, VK_RETURN,
-};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{PCWSTR, w};
+use windows::core::{BOOL, PCWSTR, w};
 
-use crate::panel::{
-    self, DRAG_THRESHOLD, Panel, PointerKind, Press, Scene, cells_of, current_layout, end_bounds,
-    item_at_cell, pointer_bounds, start_pointer, window_bounds,
-};
-use crate::win::desktop_layer;
+use crate::panel::{self, Anim, DropState, Panel, Scene, cells_of, current_layout, window_bounds};
+use crate::procs;
 use crate::win::dpi::{self, Monitor};
-use crate::win::icons::IconCache;
-use crate::win::render::Gfx;
-use crate::win::shell;
+use crate::win::edit::{Done, EditBox};
+use crate::win::icons::{IconCache, Lookup};
+use crate::win::render::{Font, Gfx};
 use crate::win::tray::Tray;
 use crate::win::watch::{DirWatch, Report};
-use crate::win::{Wide, now_ms, point_of, wheel_delta};
+use crate::win::{Wide, desktop_layer, dialogs, dragdrop, now_ms, shell};
 
 pub const WM_APP_TRAY: u32 = WM_APP + 1;
 /// Sent by a second instance: show the panels.
 pub const WM_APP_SHOW: u32 = WM_APP + 2;
 /// Load icons a panel drew placeholders for.
-const WM_APP_ICONS: u32 = WM_APP + 3;
+pub const WM_APP_ICONS: u32 = WM_APP + 3;
+/// A rename box finished (WPARAM 1 keeps the text).
+pub const WM_APP_EDIT_DONE: u32 = WM_APP + 4;
 
 pub const HOST_CLASS: PCWSTR = w!("DesktopIconsSorter.Host");
-const PANEL_CLASS: PCWSTR = w!("DesktopIconsSorter.Panel");
+pub const PANEL_CLASS: PCWSTR = w!("DesktopIconsSorter.Panel");
 
-const TIMER_SAVE: usize = 1;
-const TIMER_REFRESH: usize = 1;
+/// Host window timers.
+pub const TIMER_SAVE: usize = 1;
+/// Panel window timers.
+pub const TIMER_REFRESH: usize = 1;
+pub const TIMER_ANIM: usize = 2;
 /// How long a burst of folder changes is collected before listing it again.
 const REFRESH_MS: u32 = 150;
 /// How long loading icons may hold up the UI before it redraws and goes on.
 const ICON_BUDGET_MS: u64 = 40;
-const WHEEL_STEP: f32 = 48.0;
+/// One animation frame.
+pub const FRAME_MS: u32 = 15;
 
 /// Modal work queued by a handler (see the module docs).
 pub enum Deferred {
     Error { title: String, text: String },
     Open(PathBuf),
     TrayMenu,
+    Menu { panel: String, kind: MenuKind },
+    DragOut { panel: String, path: PathBuf },
+    Recycle(PathBuf),
+    DeletePanel(String),
     Quit,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuKind {
+    Title,
+    Background,
+    Item(PathBuf),
+}
+
+/// What a rename box is renaming.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditTarget {
+    Title(String),
+    Item(PathBuf),
 }
 
 pub struct App {
@@ -76,7 +96,10 @@ pub struct App {
     pub panels_root: PathBuf,
     pub mons: Vec<Monitor>,
     deferred: VecDeque<Deferred>,
-    taskbar_created: u32,
+    pub taskbar_created: u32,
+    /// An item being dragged out of a panel: (panel id, path).
+    pub dragging: Option<(String, PathBuf)>,
+    edit: Option<(EditBox, EditTarget)>,
 }
 
 thread_local! {
@@ -118,58 +141,49 @@ fn execute(d: Deferred) {
                 shell::error_box(None, "Could not open item", &e);
             }
         }
-        Deferred::TrayMenu => tray_menu(),
+        Deferred::TrayMenu => procs::tray_menu(),
+        Deferred::Menu { panel, kind } => procs::panel_menu(&panel, kind),
+        Deferred::DragOut { panel, path } => {
+            let Some(hwnd) =
+                with_app(|a| a.panel_by_id(&panel).map(|i| a.panels[i].hwnd)).flatten()
+            else {
+                return;
+            };
+            dragdrop::drag_out(hwnd, &path);
+            with_app(|a| {
+                a.dragging = None;
+                if let Some(i) = a.panel_by_id(&panel) {
+                    a.panels[i].drop = None;
+                    a.paint(i);
+                }
+            });
+        }
+        Deferred::Recycle(path) => {
+            if let Err(e) = shell::recycle(&path) {
+                shell::error_box(None, "Could not delete item", &e);
+            }
+        }
+        Deferred::DeletePanel(id) => delete_panel_flow(&id),
         Deferred::Quit => unsafe { PostQuitMessage(0) },
     }
 }
 
-fn hinstance() -> windows::Win32::Foundation::HINSTANCE {
+pub fn hinstance() -> windows::Win32::Foundation::HINSTANCE {
     unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default()
 }
 
-pub fn register_classes() {
-    let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default();
-    let icon = unsafe { LoadIconW(Some(hinstance()), PCWSTR(1 as _)) }.unwrap_or_default();
-    let classes: [(PCWSTR, WNDPROC, WNDCLASS_STYLES); 2] = [
-        (HOST_CLASS, Some(host_proc), WNDCLASS_STYLES(0)),
-        (PANEL_CLASS, Some(panel_proc), CS_DBLCLKS),
-    ];
-    for (name, proc_, style) in classes {
-        let class = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            style,
-            lpfnWndProc: proc_,
-            hInstance: hinstance(),
-            hCursor: cursor,
-            hIcon: icon,
-            lpszClassName: name,
-            ..Default::default()
-        };
-        unsafe { RegisterClassExW(&class) };
-    }
-}
-
-/// The hidden window that owns the tray icon and app-wide timers. It's a
-/// top-level window (not message-only) so it hears Explorer's TaskbarCreated
-/// broadcast.
-pub fn create_host() -> HWND {
-    unsafe {
-        CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            HOST_CLASS,
-            w!("Desktop Icons Sorter"),
-            WS_POPUP,
+/// Whether the user wants animations (Settings > Accessibility > Visual effects).
+fn animations_on() -> bool {
+    let mut on = BOOL(1);
+    let _ = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
             0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            Some(hinstance()),
-            None,
+            Some(&mut on as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
-        .unwrap_or_default()
-    }
+    };
+    on.as_bool()
 }
 
 impl App {
@@ -182,11 +196,16 @@ impl App {
             host,
             tray: None,
             hidden: false,
-            desktop_dir: shell::desktop_dir(),
+            // Tests point this at a throwaway folder instead of the real Desktop.
+            desktop_dir: std::env::var_os("DESKTOP_SORTER_DESKTOP")
+                .map(PathBuf::from)
+                .unwrap_or_else(shell::desktop_dir),
             panels_root: sorter::config::panels_root_dir(),
             mons: dpi::monitors(),
             deferred: VecDeque::new(),
             taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
+            dragging: None,
+            edit: None,
         })
     }
 
@@ -229,7 +248,7 @@ impl App {
         self.panels.iter().position(|p| p.hwnd == hwnd)
     }
 
-    fn panel_index_by_id(&self, id: &str) -> Option<usize> {
+    pub fn panel_by_id(&self, id: &str) -> Option<usize> {
         self.panels.iter().position(|p| p.id == id)
     }
 
@@ -324,13 +343,21 @@ impl App {
             }
         }
         desktop_layer::attach(hwnd);
+        procs::register_drop_target(hwnd);
+    }
+
+    fn close_panel_window(&mut self, i: usize) {
+        let p = self.panels.remove(i);
+        dragdrop::revoke(p.hwnd);
+        unsafe {
+            let _ = DestroyWindow(p.hwnd);
+        }
     }
 
     pub fn quit(&mut self) {
-        for p in self.panels.drain(..) {
-            unsafe {
-                let _ = DestroyWindow(p.hwnd);
-            }
+        self.edit = None;
+        while !self.panels.is_empty() {
+            self.close_panel_window(0);
         }
         self.tray = None;
         self.save_now();
@@ -352,15 +379,14 @@ impl App {
             self.icons.clear();
             self.gfx.trim();
         } else {
-            for i in 0..self.panels.len() {
-                self.paint(i);
-            }
+            self.paint_all();
         }
     }
 
     pub fn set_locked(&mut self, locked: bool) {
         self.store.update(|c| c.locked = locked);
         self.changed();
+        self.paint_all();
     }
 
     /// Displays changed: re-read them, pull unreachable panels back and redraw.
@@ -381,13 +407,11 @@ impl App {
             self.store.update_panel(&id, |p| p.bounds = b);
         }
         self.changed();
-        for i in 0..self.panels.len() {
-            self.paint(i);
-        }
+        self.paint_all();
     }
 
     /// Explorer restarted: the tray icon is gone and Progman is new.
-    fn explorer_restarted(&mut self) {
+    pub fn explorer_restarted(&mut self) {
         if let Some(t) = &self.tray {
             t.add();
         }
@@ -400,11 +424,37 @@ impl App {
 
     // ------------------------------------------------------------- drawing
 
-    /// Draws panel `i` where its config puts it (or where a drag has it now).
+    pub fn paint_all(&mut self) {
+        for i in 0..self.panels.len() {
+            self.paint(i);
+        }
+    }
+
+    /// Where panel `i`'s window is right now, in DIPs: mid-drag, mid-animation
+    /// or where its config puts it.
+    fn current_bounds(&self, i: usize, cfg: &PanelConfig) -> Bounds {
+        let panel = &self.panels[i];
+        if let Some(s) = &panel.pointer {
+            return s.last;
+        }
+        if let Some(a) = &panel.anim {
+            return a.at(now_ms());
+        }
+        window_bounds(cfg)
+    }
+
+    /// Draws panel `i`.
     pub fn paint(&mut self, i: usize) {
-        let Some(cfg) = self.config_of(i).cloned() else { return };
-        let bounds =
-            self.panels[i].pointer.as_ref().map_or_else(|| window_bounds(&cfg), |s| s.last);
+        if self.hidden {
+            return;
+        }
+        let Some(mut cfg) = self.config_of(i).cloned() else { return };
+        let bounds = self.current_bounds(i, &cfg);
+        if self.panels[i].anim.as_ref().is_some_and(|a| a.expanded_look) {
+            // While collapsing or expanding, the panel shows its expanded
+            // look, rolled up or out by the window's size.
+            cfg.collapsed = false;
+        }
         let (rect, scale) = dpi::to_physical(bounds, &self.mons);
         {
             let panel = &mut self.panels[i];
@@ -412,23 +462,36 @@ impl App {
             panel.scale = scale;
         }
         let title = if cfg.title.is_empty() { "Untitled" } else { &cfg.title };
-        self.panels[i].title_len =
-            self.gfx.measure(title, crate::win::render::Font::Title, 10_000.0).0;
+        self.panels[i].title_len = self.gfx.measure(title, Font::Title, 10_000.0).0;
         let locked = self.store.config().locked;
         let App { gfx, icons, panels, .. } = self;
         let panel = &panels[i];
         let l = current_layout(&cfg, panel);
         let cols = l.grid.map_or(1, |g| g.cols);
-        let cells = cells_of(&cfg, &panel.items, cols);
+        let mut cells = cells_of(&cfg, &panel.items, cols);
+        // While a drop can land in the grid, show where everything would go.
+        const SLOT: &str = "\0slot";
+        let mut slot = None;
+        let mut hidden_item = None;
+        if let Some(DropState { slot: Some(target), own, .. }) = &panel.drop {
+            let key = own.clone().unwrap_or_else(|| SLOT.to_string());
+            let preview = place_at(&cells, std::slice::from_ref(&key), *target, cols);
+            cells = preview
+                .iter()
+                .map(|p| (p.name.clone(), p.row as usize * cols + p.col as usize))
+                .collect();
+            slot = cells.get(&key).copied();
+            hidden_item = own.as_deref();
+        }
         let scene = Scene {
             config: &cfg,
             panel,
             layout: &l,
             locked,
-            drop_active: false,
+            drop_active: panel.drop.is_some(),
             cells: &cells,
-            slot: None,
-            hidden_item: None,
+            slot,
+            hidden_item,
         };
         let mut missing = false;
         let hwnd = panel.hwnd;
@@ -447,7 +510,7 @@ impl App {
     }
 
     /// Loads icons panel `i` is missing, for a little while, then redraws.
-    fn load_icons(&mut self, i: usize) {
+    pub fn load_icons(&mut self, i: usize) {
         self.panels[i].icons_queued = false;
         let Some(cfg) = self.config_of(i).cloned() else { return };
         let panel = &self.panels[i];
@@ -481,15 +544,126 @@ impl App {
             if now_ms() - start > ICON_BUDGET_MS {
                 break;
             }
-            if matches!(
-                self.icons.get(&self.gfx, &path, mtime, px),
-                crate::win::icons::Lookup::Missing
-            ) {
+            if matches!(self.icons.get(&self.gfx, &path, mtime, px), Lookup::Missing) {
                 self.icons.load(&self.gfx, &path, mtime, px);
             }
         }
         // Draws again; anything still missing queues another round.
         self.paint(i);
+    }
+
+    // ----------------------------------------------------------- animation
+
+    /// Slides or resizes panel `i`'s window from `from` to where its config
+    /// puts it, over the collapse animation's length.
+    fn animate(&mut self, i: usize, from: Bounds, expanded_look: bool) {
+        let Some(cfg) = self.config_of(i).cloned() else { return };
+        let to = window_bounds(&cfg);
+        if from == to || !animations_on() || self.hidden {
+            self.panels[i].anim = None;
+            self.paint(i);
+            return;
+        }
+        self.panels[i].anim = Some(Anim { from, to, start: now_ms(), expanded_look });
+        unsafe { SetTimer(Some(self.panels[i].hwnd), TIMER_ANIM, FRAME_MS, None) };
+        self.paint(i);
+    }
+
+    pub fn anim_tick(&mut self, i: usize) {
+        let done = self.panels[i].anim.as_ref().is_none_or(|a| a.done(now_ms()));
+        if done {
+            self.panels[i].anim = None;
+            unsafe {
+                let _ = KillTimer(Some(self.panels[i].hwnd), TIMER_ANIM);
+            }
+            self.paint(i);
+            // The window can be deeper than the bar; keep it below its
+            // neighbours so its transparent part doesn't take their clicks.
+            desktop_layer::send_to_bottom(self.panels[i].hwnd);
+        } else {
+            self.paint(i);
+        }
+    }
+
+    /// Jumps a running animation to its end (before a move or resize starts).
+    pub fn finish_anim(&mut self, i: usize) {
+        if self.panels[i].anim.take().is_some() {
+            unsafe {
+                let _ = KillTimer(Some(self.panels[i].hwnd), TIMER_ANIM);
+            }
+            self.paint(i);
+        }
+    }
+
+    // ------------------------------------------------------- panel changes
+
+    /// Changes panel `i`'s config and follows up on what changed: redraws,
+    /// relists for a new sort, renames the window.
+    pub fn update_panel(&mut self, i: usize, f: impl FnOnce(&mut PanelConfig)) {
+        let id = self.panels[i].id.clone();
+        let Some(before) = self.store.panel(&id).cloned() else { return };
+        self.store.update_panel(&id, f);
+        self.changed();
+        let after = self.store.panel(&id).expect("updated").clone();
+        if after.title != before.title {
+            let t = Wide::new(&after.title);
+            unsafe {
+                let _ = SetWindowTextW(self.panels[i].hwnd, t.pcwstr());
+            }
+        }
+        if after.sort_by != before.sort_by {
+            self.refresh_items(i);
+        }
+        if after.icon_size != before.icon_size {
+            self.panels[i].scroll = 0.0;
+        }
+        self.paint(i);
+    }
+
+    pub fn toggle_collapsed(&mut self, i: usize) {
+        let Some(before) = self.config_of(i).cloned() else { return };
+        let from = self.current_bounds(i, &before);
+        self.panels[i].pointer = None;
+        self.panels[i].scroll = 0.0;
+        self.store.update_panel(&before.id, |p| p.collapsed = !p.collapsed);
+        self.changed();
+        let after = self.config_of(i).expect("still there").clone();
+        self.animate(i, from, true);
+        if self.store.config().stacking {
+            self.move_stack(&before, &after);
+        }
+    }
+
+    /// Moves the panels stacked against a panel that collapsed or expanded.
+    fn move_stack(&mut self, before: &PanelConfig, after: &PanelConfig) {
+        let m = stack_move(before, after, &self.store.config().panels);
+        // Leave alone a panel the user is dragging right now.
+        let ids: Vec<String> = m
+            .ids
+            .into_iter()
+            .filter(|id| self.panel_by_id(id).is_none_or(|i| self.panels[i].pointer.is_none()))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let froms: Vec<(usize, Bounds)> = ids
+            .iter()
+            .filter_map(|id| {
+                let i = self.panel_by_id(id)?;
+                let cfg = self.store.panel(id)?.clone();
+                Some((i, self.current_bounds(i, &cfg)))
+            })
+            .collect();
+        self.store.update(|c| {
+            for p in c.panels.iter_mut().filter(|p| ids.contains(&p.id)) {
+                p.bounds.x += m.dx;
+                p.bounds.y += m.dy;
+            }
+        });
+        self.changed();
+        for (i, from) in froms {
+            self.animate(i, from, false);
+        }
     }
 
     // --------------------------------------------------------------- items
@@ -529,6 +703,18 @@ impl App {
         panel.items = items;
     }
 
+    fn refresh_folder(&mut self, dir: &Path) {
+        let hit: Vec<usize> = (0..self.panels.len())
+            .filter(|&i| {
+                self.config_of(i).is_some_and(|p| same_path(Path::new(&p.folder_path), dir))
+            })
+            .collect();
+        for i in hit {
+            self.refresh_items(i);
+            self.paint(i);
+        }
+    }
+
     /// Paths inside any panel's folder are ones the app may act on.
     pub fn is_managed_path(&self, path: &Path) -> bool {
         self.store.config().panels.iter().any(|p| {
@@ -543,17 +729,234 @@ impl App {
         }
     }
 
-    // ------------------------------------------------------------ collapse
+    /// Moves (or copies, where `copy` says so) items into `dest`; returns
+    /// their new paths. Errors are collected into one message.
+    fn move_all(
+        &mut self,
+        paths: &[PathBuf],
+        dest: &Path,
+        copy: impl Fn(&Path) -> bool,
+    ) -> Vec<PathBuf> {
+        let mut errors = Vec::new();
+        let mut moved = Vec::new();
+        let mut any_move = false;
+        for src in paths {
+            let c = copy(src);
+            any_move |= !c;
+            match if c { copy_into(src, dest) } else { move_into(src, dest) } {
+                Ok(d) => moved.push(d),
+                Err(e) => errors.push(format!("{}\n  {e}", src.display())),
+            }
+        }
+        if !errors.is_empty() {
+            let (title, extra) = if any_move {
+                (
+                    "Some items could not be moved",
+                    "\n\nItems on the shared Public Desktop need administrator rights to move.",
+                )
+            } else {
+                ("Some items could not be copied", "")
+            };
+            self.error(title, &format!("{}{extra}", errors.join("\n\n")));
+        }
+        moved
+    }
 
-    pub fn toggle_collapsed(&mut self, i: usize) {
-        let id = self.panels[i].id.clone();
-        self.store.update_panel(&id, |p| p.collapsed = !p.collapsed);
+    /// Files dropped from Explorer, the desktop or another panel: copy or
+    /// move them (as `AddMode` says) into the panel's folder, into cell `at`
+    /// of a grid `cols` wide, or after the last item. Items from another
+    /// panel always move.
+    pub fn drop_files(&mut self, i: usize, paths: Vec<PathBuf>, at: Option<(usize, usize)>) {
+        let Some(p) = self.config_of(i).cloned() else { return };
+        let folders: Vec<PathBuf> =
+            self.store.config().panels.iter().map(|o| PathBuf::from(&o.folder_path)).collect();
+        let movable: Vec<PathBuf> = paths
+            .into_iter()
+            .filter(|x| {
+                x.exists()
+                    && x.parent().is_some() // drive roots
+                    && !same_path(x, &self.desktop_dir)
+                    && !folders.iter().any(|f| same_path(x, f))
+            })
+            .collect();
+        let copy = self.store.config().add_mode == AddMode::Copy;
+        let dest = PathBuf::from(&p.folder_path);
+        let managed: Vec<bool> = movable.iter().map(|m| self.is_managed_path(m)).collect();
+        let moved = self.move_all(&movable, &dest, |src| {
+            copy && !movable.iter().zip(&managed).any(|(m, &managed)| m == src && managed)
+        });
+        // Without a spot to go to, items that were already here stay where they are.
+        let placed: Vec<&PathBuf> = if at.is_some() {
+            moved.iter().collect()
+        } else {
+            moved.iter().filter(|m| !movable.iter().any(|src| same_path(src, m))).collect()
+        };
+        if placed.is_empty() {
+            return;
+        }
+        let names: Vec<String> = placed
+            .iter()
+            .filter_map(|m| m.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        let mut cells: Option<Vec<PlacedItem>> = None;
+        if let Some((cell, cols)) = at
+            && p.sort_by == SortBy::Custom
+        {
+            // Lay the grid out as the panel shows it, then put the new items in.
+            let shown: Vec<String> = list_items(&dest, SortBy::Custom, &p.order, &p.cells)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|it| it.file_name)
+                .filter(|n| !names.contains(n))
+                .collect();
+            let mut c = place_at(&layout_grid(&shown, &p.cells, cols), &names, cell, cols);
+            c.truncate(MAX_PANEL_ITEMS);
+            cells = Some(c);
+        }
+        self.store.update_panel(&p.id, |d| {
+            d.order = place_in_order(&d.order, &names, None);
+            if let Some(c) = cells {
+                d.cells = c;
+            }
+        });
         self.changed();
-        self.panels[i].scroll = 0.0;
+        // Items already in this folder don't change it, so nothing else refreshes.
+        self.refresh_items(i);
         self.paint(i);
     }
 
-    // ---------------------------------------------------- waits and timers
+    /// Saves where the user put every item; arranging switches to custom order.
+    pub fn arrange_items(&mut self, i: usize, cells: Vec<PlacedItem>) {
+        let mut seen = std::collections::HashSet::new();
+        let unique: Vec<PlacedItem> =
+            cells.into_iter().filter(|p| seen.insert(p.name.to_lowercase())).collect();
+        self.update_panel(i, |d| {
+            d.cells = unique;
+            d.sort_by = SortBy::Custom;
+        });
+        self.refresh_items(i);
+        self.paint(i);
+    }
+
+    /// Where each item of panel `i` sits, as spots, for a grid `cols` wide.
+    pub fn grid_layout(&self, i: usize, cols: usize) -> HashMap<String, usize> {
+        match self.config_of(i) {
+            Some(cfg) => cells_of(cfg, &self.panels[i].items, cols),
+            None => HashMap::new(),
+        }
+    }
+
+    pub fn move_item_to(&mut self, path: &Path, dest: &Path) {
+        if self.is_managed_path(path) {
+            self.move_all(&[path.to_path_buf()], dest, |_| false);
+            self.refresh_folder(dest);
+            if let Some(parent) = path.parent() {
+                self.refresh_folder(parent);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------- rename
+
+    pub fn start_edit(&mut self, i: usize, target: EditTarget) {
+        self.edit = None;
+        let Some(cfg) = self.config_of(i).cloned() else { return };
+        let panel = &self.panels[i];
+        let l = current_layout(&cfg, panel);
+        let s = panel.scale;
+        let screen = |r: sorter::panel_layout::Rect| RECT {
+            left: panel.rect.left + (r.x * s).round() as i32,
+            top: panel.rect.top + (r.y * s).round() as i32,
+            right: panel.rect.left + (r.right() * s).round() as i32,
+            bottom: panel.rect.top + (r.bottom() * s).round() as i32,
+        };
+        let (rect, text, bold, px) = match &target {
+            EditTarget::Title(_) => {
+                let r = if l.vertical_bar() {
+                    let w = l.panel.w.clamp(120.0, 220.0);
+                    sorter::panel_layout::Rect::new(0.0, 3.0, w, 24.0)
+                } else {
+                    sorter::panel_layout::Rect::new(l.title.x, l.bar.y + 3.0, l.title.w, 24.0)
+                };
+                (screen(r), cfg.title.clone(), true, 12.5)
+            }
+            EditTarget::Item(path) => {
+                let Some(g) = l.grid else { return };
+                let Some(item) = panel.items.iter().find(|it| &it.path == path) else { return };
+                let cols = g.cols;
+                let Some(&cell) = cells_of(&cfg, &panel.items, cols).get(&item.file_name) else {
+                    return;
+                };
+                let t = g.tile(cell, panel.scroll);
+                let y = t.y + 7.0 + g.icon + 2.0;
+                let r = sorter::panel_layout::Rect::new(t.x - 6.0, y, t.w + 12.0, 22.0);
+                (screen(r), item.display_name.clone(), false, 11.5)
+            }
+        };
+        let done = Done { to: self.host, msg: WM_APP_EDIT_DONE };
+        let font_px = (px * s).round() as i32;
+        if let Some(edit) = EditBox::new(panel.hwnd, rect, &text, font_px, bold, done) {
+            self.edit = Some((edit, target));
+        }
+    }
+
+    pub fn finish_edit(&mut self, keep: bool) {
+        let Some((edit, target)) = self.edit.take() else { return };
+        let text = edit.text();
+        drop(edit);
+        if !keep {
+            return;
+        }
+        match target {
+            EditTarget::Title(id) => {
+                let title = text.trim().to_string();
+                let Some(i) = self.panel_by_id(&id) else { return };
+                if !title.is_empty() && self.config_of(i).is_some_and(|p| p.title != title) {
+                    let title: String = title.chars().take(200).collect();
+                    self.update_panel(i, |p| p.title = title);
+                }
+            }
+            EditTarget::Item(path) => {
+                let name = text.trim();
+                let current =
+                    path.file_name().map(|n| folder::display_name_for(&n.to_string_lossy()));
+                if name.is_empty()
+                    || current.as_deref() == Some(name)
+                    || !self.is_managed_path(&path)
+                {
+                    return;
+                }
+                match rename_item(&path, name) {
+                    Ok(dest) => {
+                        let (from, to) = (file_name(&path), file_name(&dest));
+                        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+                        // Keep the renamed item where the user arranged it.
+                        if let Some(i) = (0..self.panels.len()).find(|&i| {
+                            self.config_of(i)
+                                .is_some_and(|p| same_path(Path::new(&p.folder_path), &dir))
+                        }) {
+                            self.update_panel(i, |d| {
+                                d.order = rename_in_order(&d.order, &from, &to);
+                                d.cells = rename_in_cells(&d.cells, &from, &to);
+                            });
+                            let panel = &mut self.panels[i];
+                            if panel.selected.remove(&from.to_lowercase()) {
+                                panel.selected.insert(to.to_lowercase());
+                            }
+                        }
+                        self.refresh_folder(&dir);
+                    }
+                    Err(e) => self.error("Could not rename item", &e.to_string()),
+                }
+            }
+        }
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.edit.is_some()
+    }
+
+    // ---------------------------------------------------- waits and signals
 
     /// The handles the main loop waits on besides messages.
     pub fn wait_handles(&self) -> Vec<HANDLE> {
@@ -573,444 +976,82 @@ impl App {
         }
         unsafe { SetTimer(Some(self.panels[i].hwnd), TIMER_REFRESH, REFRESH_MS, None) };
     }
-}
 
-// ------------------------------------------------------------- tray menu
+    // ------------------------------------------------------- app settings
 
-const CMD_NEW: usize = 1;
-const CMD_SHOW: usize = 2;
-const CMD_LOCK: usize = 3;
-const CMD_CONFIG: usize = 6;
-const CMD_QUIT: usize = 7;
+    pub fn set_start_with_windows(&mut self, on: bool) {
+        shell::set_start_with_windows(on);
+        self.store.update(|c| c.start_with_windows = on);
+        self.changed();
+    }
 
-/// A popup menu; items are (id, label, checked), id 0 for a separator.
-fn popup(items: &[(usize, &str, bool)]) -> HMENU {
-    unsafe {
-        let menu = CreatePopupMenu().unwrap_or_default();
-        for &(id, label, checked) in items {
-            if id == 0 {
-                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-            } else {
-                let flags = MF_STRING | if checked { MF_CHECKED } else { MF_UNCHECKED };
-                let l = Wide::new(label);
-                let _ = AppendMenuW(menu, flags, id, l.pcwstr());
-            }
+    /// Opens panel `i`'s settings window.
+    pub fn open_settings(&mut self, _i: usize) {}
+
+    pub fn open_app_settings(&mut self) {}
+
+    /// Keeps the catching panel from taking back an item the app itself puts on the desktop.
+    pub fn ignore_on_desktop(&mut self, _path: &Path) {}
+
+    pub fn host_timer(&mut self, _id: usize) {}
+
+    /// WM_SETTINGCHANGE: the work area or the theme may have changed.
+    pub fn settings_changed(&mut self, _l: LPARAM) {
+        self.displays_changed();
+    }
+
+    // --------------------------------------------------------- delete panel
+
+    fn delete_panel(&mut self, id: &str, move_back: bool) {
+        let Some(i) = self.panel_by_id(id) else { return };
+        let Some(p) = self.config_of(i).cloned() else { return };
+        let folder = PathBuf::from(&p.folder_path);
+        if move_back {
+            let items: Vec<PathBuf> =
+                self.panels[i].items.iter().map(|it| it.path.clone()).collect();
+            let desktop = self.desktop_dir.clone();
+            self.move_all(&items, &desktop, |_| false);
         }
-        menu
+        // Only removes the folder when it's empty; never deletes user files.
+        let _ = std::fs::remove_dir(&folder);
+        self.store.update(|c| c.panels.retain(|x| x.id != id));
+        self.changed();
+        self.close_panel_window(i);
     }
 }
 
-/// Shows a menu at the cursor and returns the chosen id (0 when dismissed).
-pub fn track(menu: HMENU, owner: HWND) -> usize {
-    let mut pt = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-        // Without this the menu doesn't close when clicking elsewhere.
-        let _ = SetForegroundWindow(owner);
-        let cmd = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-            pt.x,
-            pt.y,
-            None,
-            owner,
-            None,
-        );
-        let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
-        let _ = DestroyMenu(menu);
-        cmd.0 as usize
-    }
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn tray_menu() {
-    let Some((host, hidden, locked)) = with_app(|a| (a.host, a.hidden, a.store.config().locked))
-    else {
+/// Asks how to delete a panel (moving its items back to the desktop, or
+/// keeping its folder), then does it.
+fn delete_panel_flow(id: &str) {
+    let Some((hwnd, title, folder, count)) = with_app(|a| {
+        let i = a.panel_by_id(id)?;
+        a.refresh_items(i);
+        let p = a.config_of(i)?;
+        Some((a.panels[i].hwnd, p.title.clone(), p.folder_path.clone(), a.panels[i].items.len()))
+    })
+    .flatten() else {
         return;
     };
-    let menu = popup(&[
-        (CMD_NEW, "New panel", false),
-        (CMD_SHOW, if hidden { "Show panels" } else { "Hide panels" }, false),
-        (CMD_LOCK, "Lock panels", locked),
-        (0, "", false),
-        (CMD_CONFIG, "Open config folder", false),
-        (0, "", false),
-        (CMD_QUIT, "Quit", false),
-    ]);
-    let cmd = track(menu, host);
-    with_app(|a| match cmd {
-        CMD_NEW => a.new_panel(),
-        CMD_SHOW => a.set_hidden(!a.hidden),
-        CMD_LOCK => a.set_locked(!a.store.config().locked),
-        CMD_CONFIG => {
-            if let Some(dir) = a.store.path().parent() {
-                a.defer(Deferred::Open(dir.to_path_buf()));
-            }
+    let move_back = if count == 0 {
+        let main = format!("Delete the empty panel \"{title}\"?");
+        match dialogs::ask(Some(hwnd), "Delete panel", &main, "", &["Delete", "Cancel"], false) {
+            Some(0) => false,
+            _ => return,
         }
-        CMD_QUIT => a.quit(),
-        _ => {}
-    });
-    run_deferred();
-}
-
-// --------------------------------------------------------- window procs
-
-extern "system" fn host_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-    let handled = with_app(|a| {
-        if msg == a.taskbar_created && msg != 0 {
-            a.explorer_restarted();
-            return Some(LRESULT(0));
-        }
-        match msg {
-            WM_APP_TRAY => {
-                match (l.0 as u32) & 0xffff {
-                    WM_LBUTTONUP => a.set_hidden(!a.hidden),
-                    WM_RBUTTONUP | WM_CONTEXTMENU => a.defer(Deferred::TrayMenu),
-                    _ => {}
-                }
-                Some(LRESULT(0))
-            }
-            WM_APP_SHOW => {
-                a.set_hidden(false);
-                Some(LRESULT(0))
-            }
-            WM_TIMER if w.0 == TIMER_SAVE => {
-                a.save_now();
-                Some(LRESULT(0))
-            }
-            WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
-                a.displays_changed();
-                None
-            }
-            WM_QUERYENDSESSION => {
-                a.save_now();
-                Some(LRESULT(1))
-            }
-            _ => None,
-        }
-    })
-    .flatten();
-    run_deferred();
-    handled.unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, w, l) })
-}
-
-fn ctrl_down() -> bool {
-    (unsafe { GetKeyState(VK_CONTROL.0 as i32) }) < 0
-}
-
-fn cursor() -> POINT {
-    let mut p = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut p);
-    }
-    p
-}
-
-fn moved_past(a: POINT, b: POINT) -> bool {
-    (a.x - b.x).abs().max((a.y - b.y).abs()) >= DRAG_THRESHOLD
-}
-
-extern "system" fn panel_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-    if msg == WM_WINDOWPOSCHANGING {
-        // Stay at the bottom of the z-order even while active.
-        let pos = unsafe { &mut *(l.0 as *mut WINDOWPOS) };
-        if !pos.flags.contains(SWP_NOZORDER) {
-            pos.hwndInsertAfter = HWND_BOTTOM;
-        }
-        return LRESULT(0);
-    }
-    let handled = with_app(|a| {
-        let i = a.panel_index(hwnd)?;
-        panel_message(a, i, msg, w, l)
-    })
-    .flatten();
-    run_deferred();
-    handled.unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, w, l) })
-}
-
-/// The mouse position in DIPs within panel `i`.
-fn dip(a: &App, i: usize, l: LPARAM) -> (f32, f32) {
-    let (x, y) = point_of(l);
-    let s = a.panels[i].scale;
-    (x as f32 / s, y as f32 / s)
-}
-
-fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
-    let hwnd = a.panels[i].hwnd;
-    let cfg = a.config_of(i)?.clone();
-    let locked = a.store.config().locked;
-    match msg {
-        WM_LBUTTONDOWN => {
-            let (x, y) = dip(a, i, l);
-            let hit = panel::hit(&cfg, &a.panels[i], locked, x, y);
-            let at = cursor();
-            let press = match hit {
-                Hit::Resize(edge) => {
-                    start_move(a, i, PointerKind::Resize(edge));
-                    None
-                }
-                Hit::Chevron | Hit::Gear => Some(Press::Button(hit)),
-                Hit::TitleText | Hit::TitleBar => (!locked).then_some(Press::Title(at)),
-                Hit::Cell(cell) => {
-                    let cols = current_layout(&cfg, &a.panels[i]).grid.map_or(1, |g| g.cols);
-                    let item = item_at_cell(&cfg, &a.panels[i].items, cols, cell)
-                        .map(|it| it.file_name.clone());
-                    let panel = &mut a.panels[i];
-                    match item {
-                        Some(name) => {
-                            let k = name.to_lowercase();
-                            if ctrl_down() {
-                                if !panel.selected.remove(&k) {
-                                    panel.selected.insert(k);
-                                }
-                            } else if !panel.selected.contains(&k) {
-                                panel.selected = [k].into();
-                            }
-                            Some(Press::Item(at, name))
-                        }
-                        None => {
-                            panel.selected.clear();
-                            None
-                        }
-                    }
-                }
-                Hit::Peek(n) => {
-                    a.panels[i].items.get(n).map(|it| Press::Peek(at, it.file_name.clone()))
-                }
-                Hit::Body => {
-                    a.panels[i].selected.clear();
-                    None
-                }
-            };
-            if press.is_some() {
-                unsafe { SetCapture(hwnd) };
-            }
-            a.panels[i].press = press;
-            a.paint(i);
-            Some(LRESULT(0))
-        }
-        WM_MOUSEMOVE => {
-            if a.panels[i].pointer.is_some() {
-                pointer_moved(a, i);
-                return Some(LRESULT(0));
-            }
-            if let Some(Press::Title(at)) = a.panels[i].press
-                && moved_past(at, cursor())
-            {
-                a.panels[i].press = None;
-                start_move(a, i, PointerKind::Move);
-                return Some(LRESULT(0));
-            }
-            let (x, y) = dip(a, i, l);
-            let hit = panel::hit(&cfg, &a.panels[i], locked, x, y);
-            let panel = &mut a.panels[i];
-            if !panel.inside {
-                let mut t = TRACKMOUSEEVENT {
-                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                unsafe {
-                    let _ = TrackMouseEvent(&mut t);
-                }
-            }
-            if !panel.inside || panel.hover != Some(hit) {
-                panel.inside = true;
-                panel.hover = Some(hit);
-                a.paint(i);
-            }
-            Some(LRESULT(0))
-        }
-        WM_MOUSELEAVE => {
-            let panel = &mut a.panels[i];
-            panel.inside = false;
-            panel.hover = None;
-            a.paint(i);
-            Some(LRESULT(0))
-        }
-        WM_LBUTTONUP => {
-            let press = a.panels[i].press.take();
-            if a.panels[i].pointer.is_some() {
-                end_move(a, i);
-            }
-            unsafe {
-                let _ = ReleaseCapture();
-            }
-            let (x, y) = dip(a, i, l);
-            let hit = panel::hit(&cfg, &a.panels[i], locked, x, y);
-            match press {
-                Some(Press::Button(Hit::Chevron)) if hit == Hit::Chevron => a.toggle_collapsed(i),
-                Some(Press::Button(Hit::Gear)) if hit == Hit::Gear => {}
-                Some(Press::Peek(_, name)) if matches!(hit, Hit::Peek(_)) => {
-                    let path = Path::new(&cfg.folder_path).join(name);
-                    a.open_item(&path);
-                }
-                _ => {}
-            }
-            Some(LRESULT(0))
-        }
-        WM_LBUTTONDBLCLK => {
-            let (x, y) = dip(a, i, l);
-            match panel::hit(&cfg, &a.panels[i], locked, x, y) {
-                Hit::TitleBar | Hit::TitleText => a.toggle_collapsed(i),
-                Hit::Cell(cell) => {
-                    let cols = current_layout(&cfg, &a.panels[i]).grid.map_or(1, |g| g.cols);
-                    if let Some(item) = item_at_cell(&cfg, &a.panels[i].items, cols, cell) {
-                        let path = item.path.clone();
-                        a.open_item(&path);
-                    }
-                }
-                _ => {}
-            }
-            Some(LRESULT(0))
-        }
-        WM_CAPTURECHANGED => {
-            a.panels[i].press = None;
-            if a.panels[i].pointer.is_some() {
-                end_move(a, i);
-            }
-            Some(LRESULT(0))
-        }
-        WM_MOUSEWHEEL => {
-            let l_ = current_layout(&cfg, &a.panels[i]);
-            if let Some(g) = l_.grid {
-                let cells = cells_of(&cfg, &a.panels[i].items, g.cols);
-                let used = cells.values().max().map_or(0, |m| m + 1);
-                let panel = &mut a.panels[i];
-                let steps = wheel_delta(w) as f32 / 120.0;
-                let next = (panel.scroll - steps * WHEEL_STEP).clamp(0.0, g.max_scroll(used));
-                if next != panel.scroll {
-                    panel.scroll = next;
-                    a.paint(i);
-                }
-            }
-            Some(LRESULT(0))
-        }
-        WM_SETCURSOR => {
-            let p = cursor();
-            let r = a.panels[i].rect;
-            let s = a.panels[i].scale;
-            let (x, y) = ((p.x - r.left) as f32 / s, (p.y - r.top) as f32 / s);
-            let id = match panel::hit(&cfg, &a.panels[i], locked, x, y) {
-                Hit::Resize(e) if (e.n || e.s) && !(e.e || e.w) => IDC_SIZENS,
-                Hit::Resize(e) if !(e.n || e.s) => IDC_SIZEWE,
-                Hit::Resize(e) if (e.n && e.e) || (e.s && e.w) => IDC_SIZENESW,
-                Hit::Resize(_) => IDC_SIZENWSE,
-                _ => IDC_ARROW,
-            };
-            unsafe { SetCursor(LoadCursorW(None, id).ok()) };
-            Some(LRESULT(1))
-        }
-        WM_KEYDOWN => {
-            let key = w.0 as u16;
-            let panel = &mut a.panels[i];
-            if key == VK_RETURN.0 {
-                let paths: Vec<PathBuf> = panel
-                    .items
-                    .iter()
-                    .filter(|it| panel.is_selected(it))
-                    .map(|it| it.path.clone())
-                    .collect();
-                for p in paths {
-                    a.open_item(&p);
-                }
-            } else if key == VK_ESCAPE.0 {
-                panel.selected.clear();
-                a.paint(i);
-            } else if key == b'A' as u16 && ctrl_down() {
-                panel.selected = panel.items.iter().map(|it| it.file_name.to_lowercase()).collect();
-                a.paint(i);
-            }
-            Some(LRESULT(0))
-        }
-        WM_ACTIVATE => {
-            // Back to the bottom once another window takes over.
-            if (w.0 & 0xffff) as u32 == WA_INACTIVE {
-                desktop_layer::send_to_bottom(hwnd);
-            }
-            None
-        }
-        WM_TIMER if w.0 == TIMER_REFRESH => {
-            unsafe {
-                let _ = KillTimer(Some(hwnd), TIMER_REFRESH);
-            }
-            a.refresh_items(i);
-            a.paint(i);
-            Some(LRESULT(0))
-        }
-        WM_APP_ICONS => {
-            a.load_icons(i);
-            Some(LRESULT(0))
-        }
-        WM_DPICHANGED => {
-            a.mons = dpi::monitors();
-            a.paint(i);
-            Some(LRESULT(0))
-        }
-        // Alt+F4 on a panel doesn't close it; panels go away from their menu.
-        WM_CLOSE => Some(LRESULT(0)),
-        _ => None,
-    }
-}
-
-fn start_move(a: &mut App, i: usize, kind: PointerKind) {
-    if a.store.config().locked {
-        return;
-    }
-    let Some(cfg) = a.config_of(i).cloned() else { return };
-    let snapping = a.store.config().snapping;
-    let scale = a.panels[i].scale;
-    let pointer = start_pointer(&cfg, &a.store.config().panels, kind, snapping, scale);
-    if pointer.is_some() {
-        unsafe { SetCapture(a.panels[i].hwnd) };
-    }
-    a.panels[i].pointer = pointer;
-}
-
-fn pointer_moved(a: &mut App, i: usize) {
-    let Some(cfg) = a.config_of(i).cloned() else { return };
-    let c = cursor();
-    let work = dpi::monitor_for_point(c, &a.mons).dip_work();
-    let s = a.panels[i].pointer.as_ref().expect("checked by the caller");
-    let next = pointer_bounds(s, &cfg, c, work);
-    if next == s.last {
-        return;
-    }
-    let size_changed = (next.width, next.height) != (s.last.width, s.last.height);
-    a.panels[i].pointer.as_mut().expect("checked").last = next;
-    let (rect, scale) = dpi::to_physical(next, &a.mons);
-    let panel = &mut a.panels[i];
-    if size_changed || scale != panel.scale {
-        a.paint(i);
     } else {
-        // Moving only: no need to draw again.
-        panel.rect = rect;
-        let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
-        unsafe {
-            let _ = SetWindowPos(panel.hwnd, None, rect.left, rect.top, 0, 0, flags);
+        let main = format!("Delete the panel \"{title}\"?");
+        let detail = format!("It contains {count} item(s) stored in:\n{folder}");
+        let buttons = ["Move items to Desktop and delete", "Delete panel, keep folder", "Cancel"];
+        match dialogs::ask(Some(hwnd), "Delete panel", &main, &detail, &buttons, true) {
+            Some(0) => true,
+            Some(1) => false,
+            _ => return,
         }
-    }
+    };
+    with_app(|a| a.delete_panel(id, move_back));
+    run_deferred();
 }
-
-fn end_move(a: &mut App, i: usize) {
-    let Some(s) = a.panels[i].pointer.take() else { return };
-    let Some(cfg) = a.config_of(i).cloned() else { return };
-    let b = end_bounds(&s, &cfg);
-    if b != cfg.bounds {
-        a.store.update_panel(&cfg.id, |p| p.bounds = b);
-        a.changed();
-    }
-    a.paint(i);
-}
-
-/// For callers outside the window procedures that know a panel by id.
-pub fn paint_panel(id: &str) {
-    with_app(|a| {
-        if let Some(i) = a.panel_index_by_id(id) {
-            a.paint(i);
-        }
-    });
-}
-
-#[allow(dead_code)]
-fn unused(_: RECT) {}
