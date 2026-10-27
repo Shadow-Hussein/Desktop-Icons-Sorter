@@ -2,7 +2,7 @@
 
 Rectangular, customizable panels on the Windows desktop for sorting your icons. It works like Stardock Fences: drop shortcuts into a panel to group them, then collapse the panel when you want a clean desktop.
 
-![Panels on the Windows desktop: an Apps panel with a standard title bar, a Documents panel with a pill title bar, a Photos panel with a soft title bar, a Dev panel collapsed to a tile, and a Tools panel with a minimal title bar collapsed to a dock](docs/screenshots/desktop.webp)
+![Panels on the Windows desktop: an Apps panel with a standard title bar, a Documents panel with a pill title bar and a scattered flower texture, a frosted Games panel blurring the wallpaper behind it, a Photos panel with a soft title bar, a Favorites panel with a picture background and a vignette, a Dev panel with a crack texture collapsed to a tile, and a Tools panel with a minimal title bar collapsed to a dock](docs/screenshots/desktop.webp)
 
 It's a small native app (Rust, Win32 and Direct2D): one process of about 16 MB with four panels, and a single exe under 1 MB.
 
@@ -12,7 +12,7 @@ Free and open source under the [MIT License](LICENSE).
 
 - **Panels that live on the desktop.** They sit behind normal windows, stay out of the taskbar and Alt+Tab, and stay visible on "Show desktop" (Win+D).
 - **Folder-backed.** Each panel shows a real folder (`%USERPROFILE%\DesktopSorter\<panel>` by default). Dropping a desktop icon onto a panel copies it into that folder, or moves it there so it leaves the cluttered desktop: choose Copy (the default) or Move in app settings. Icons dragged from one panel to another always move. The grouping survives restarts and Windows rearranging your icons.
-- **Customizable per panel**, in a settings window with one-click controls (picture tiles for the title bar shape and style, arrow buttons for the collapse direction, toggle switches) that follows the Windows light or dark theme:
+- **Customizable per panel**, in a settings window with one-click controls (picture tiles for the title bar shape and style and for the background texture and effect, arrow buttons for the collapse direction, toggle switches) that follows the Windows light or dark theme:
   - title (double-click it to rename)
   - background color and transparency
   - background picture: any image file, with its own transparency, filling the panel, fitted inside it, stretched or tiled
@@ -33,7 +33,7 @@ Free and open source under the [MIT License](LICENSE).
 - **Starts with Windows** after a fresh install (turn it off in app settings or the tray menu). The portable exe doesn't, since it isn't installed anywhere.
 - **Item actions:**
   - double-click to open
-  - select several with Ctrl+click, Shift+click or Shift+arrow keys
+  - select several with Ctrl+click, Shift+click or Shift+arrow keys; a selected item shows its whole name, and clicking another panel or the desktop deselects
   - drag out (one item or the whole selection) to Explorer, the desktop or another panel
   - right-click for the Windows context menu (Open with, Send to, Cut, Copy, Delete, Rename, Properties and what other apps add; Shift+right-click for more), plus Show in panel folder and Move to Desktop or another panel
   - Explorer's keyboard shortcuts: Enter opens, F2 renames, Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste, Delete or Ctrl+D moves to the Recycle Bin (Shift+Delete too: the app never deletes outright), Alt+Enter shows Properties, Ctrl+Shift+C copies the path, Ctrl+Shift+N makes a new folder, Ctrl+A selects all, arrow keys, Home and End move, F5 refreshes, and the context menu key or Shift+F10 opens the menu
@@ -43,7 +43,7 @@ Free and open source under the [MIT License](LICENSE).
 - **Safe deletes.** Deleting a panel asks whether to move its items back to the Desktop. Files are never deleted.
 
 <p align="center">
-  <img src="docs/screenshots/settings.webp" width="640" alt="The panel settings window, with picture tiles for the title bar shape and style, and the app settings window, next to an Apps panel, a Photos panel and a Dev panel collapsed to a tile">
+  <img src="docs/screenshots/settings.webp" width="640" alt="The settings window of a Favorites panel, with Copy look from, picture tiles for the title bar shape and style, and a Background section with the picture, texture and effect tiles, next to the app settings window, the Favorites panel with its picture background, a Documents panel with a flower texture and a Dev panel collapsed to a tile">
 </p>
 
 ## Getting started
@@ -59,7 +59,7 @@ Build the installer and the portable exe into `dist/` (needs [NSIS](https://nsis
 
 ```bash
 cargo build --release
-makensis -DVERSION=0.2.0 -DOUTFILE=..\dist\desktop-icons-sorter-0.2.0-setup.exe installer\installer.nsi
+makensis -DVERSION=0.3.0 -DOUTFILE=..\dist\desktop-icons-sorter-0.3.0-setup.exe installer\installer.nsi
 ```
 
 The release exe (`target\release\desktop-icons-sorter.exe`) is a single file that runs from anywhere, so it's also the portable build. The installer puts it in `%LOCALAPPDATA%\Programs\Desktop Icons Sorter`, adds a Start menu shortcut and starts it with Windows. Installing over an Electron build of the app removes that build first and keeps your panels and settings.
@@ -72,11 +72,11 @@ The app and installer icon is `build/icon.ico`. It's generated by `build/make-ic
 2. Tag that commit and push the tag:
 
    ```bash
-   git tag v0.3.0
-   git push origin v0.3.0
+   git tag v0.4.0
+   git push origin v0.4.0
    ```
 
-The **Release** workflow then builds both executables on Windows and publishes them as a GitHub release. The release notes list every commit subject since the previous tag (version-bump commits are left out), so write commit subjects that make sense to users. Preview them with `node scripts/release-notes.mjs v0.3.0` after tagging locally. It fails if the tag doesn't match the `Cargo.toml` version. The executables aren't code-signed, so Windows SmartScreen will warn on first run.
+The **Release** workflow then builds both executables on Windows and publishes them as a GitHub release. The release notes list every commit subject since the previous tag (version bumps, and reverts of them, are left out), so write commit subjects that make sense to users. Preview them with `node scripts/release-notes.mjs v0.4.0` after tagging locally. It fails if the tag doesn't match the `Cargo.toml` version. The executables aren't code-signed, so Windows SmartScreen will warn on first run.
 
 ## Development
 
@@ -105,6 +105,8 @@ src/
     folder.rs              List, sort, move (collision-safe, cross-drive), copy, rename
     catcher.rs             Deciding which new desktop items to catch
     panel_layout.rs        Where everything in a panel goes, and hit testing
+    background.rs          Background pictures, textures and effects as geometry:
+                           fitting, texture shapes, scatter, blur, wallpaper placement
     icon_source.rs, overlay.rs   Shortcut and .url icon locations, the shortcut arrow
   main.rs                  Single instance, OLE, the message loop
   app.rs                   The app's state and everything it does
@@ -112,7 +114,8 @@ src/
   panel.rs                 Drawing a panel; moving and resizing it
   settings.rs              The panel settings and app settings windows
   win/                     Win32: desktop layer, Direct2D drawing, shell icons,
-                           folder watching, tray, menus, dialogs, rename box
+                           background pictures and the wallpaper (WIC), folder
+                           watching, tray, menus, dialogs, rename box
 installer/installer.nsi    The NSIS installer
 fixtures/                  A config.json written by the Electron app, for tests
 ```
@@ -124,6 +127,7 @@ Each panel window is made an _owned_ window of `Progman` (the desktop shell wind
 ## Notes and limitations
 
 - Items on the shared _Public Desktop_ (`C:\Users\Public\Desktop`) need administrator rights to move. The app tells you when a move fails.
+- Blur and pixelate show the desktop wallpaper behind a panel, not desktop icons or windows that happen to be behind it.
 - Renaming a panel does not rename its folder. Use **Panel settings → Folder → Change…** to point a panel at a different folder.
 - Panels and the settings windows aren't yet usable with a screen reader or the keyboard alone (beyond Enter, F2, Escape and Ctrl+A in a panel).
 
