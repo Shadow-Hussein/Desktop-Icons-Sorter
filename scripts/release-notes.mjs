@@ -38,8 +38,9 @@ const commits = git(
     const [hash, subject] = line.split(SEP)
     return { hash, subject: subject.trim() }
   })
-  // Housekeeping commits that say nothing about the app itself.
-  .filter(({ subject }) => !/^(bump version|initial commit$)/i.test(subject))
+  // Housekeeping commits that say nothing about the app itself, including
+  // reverting a version bump (`Revert "Bump version to …"`).
+  .filter(({ subject }) => !/^(revert "?)?(bump version|initial commit$)/i.test(subject))
 
 const repoUrl =
   process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY
