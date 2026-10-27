@@ -15,10 +15,14 @@ Free and open source under the [MIT License](LICENSE).
 - **Customizable per panel**, in a settings window with one-click controls (picture tiles for the title bar shape and style, arrow buttons for the collapse direction, toggle switches) that follows the Windows light or dark theme:
   - title (double-click it to rename)
   - background color and transparency
+  - background picture: any image file, with its own transparency, filling the panel, fitted inside it, stretched or tiled
+  - background texture: flowers, vines, leaves, dots, stripes, waves, stars, hearts or cracks, in a color, transparency and size you choose (grey by default), in neat rows or scattered at random in slightly different sizes
+  - background effect, one at a time with a strength slider: blur (frosted glass: the desktop wallpaper behind the panel and the panel's picture, blurred; it stays lined up with the wallpaper while you move the panel, and works with Windows' transparency effects on or off), pixelate (the wallpaper behind the panel, the picture and the texture as big square pixels), grain, vignette, gradient or scanlines
   - title bar color, transparency and text color
   - title bar shape: default, dock (a collapsed panel shows a row of its apps you can click to open) or tile (a collapsed panel is a square with four of its apps, at the start, middle or end of its edge)
   - title bar style, with any shape: standard, pill (a rounded capsule), minimal (just the title, no bar, expanded or collapsed; the collapse arrow shows when you point at the panel, and a collapsed panel always shows its expand arrow) or soft (the bar fades out at its ends and blends into the panel instead of hard edges)
   - color presets
+  - copy the look of another panel (its colors, title bar, icon size and background) from the panel's settings or its title bar or background menu ("Copy look from"); its title, folder, icons, position, size and collapse direction stay its own
   - icon size (small, medium, large) and sort order (custom, name, type, date modified)
 - **Arrange icons your way.** Drag an icon to any spot in its panel, including empty ones, and it stays there, gaps and all. Drop it on another icon and that icon and the ones right after it slide along to the next gap, like a phone's home screen. Custom order is the default; new items go after the last icon, and an item dropped in from elsewhere lands where you drop it. If a panel gets too narrow for an icon's column, the icon moves to the next free spot until the panel is wide enough again. Picking Name, Type or Date sorts the panel instead, and dragging an icon switches back to custom order.
 - **Catch new desktop items.** Turn on "Catch new desktop items" in a panel's settings and new shortcuts, downloads and files that appear on your desktop are copied (or moved, as set in app settings) into that panel. One panel catches at a time. It waits for a download to finish, and leaves alone renamed desktop items, empty new files and folders (probably still being named), and items you move to the desktop from a panel. It watches your own Desktop folder only, so shortcuts an installer puts on the shared Public Desktop (for all users) aren't caught.
@@ -33,7 +37,8 @@ Free and open source under the [MIT License](LICENSE).
   - drag out (one item or the whole selection) to Explorer, the desktop or another panel
   - right-click for the Windows context menu (Open with, Send to, Cut, Copy, Delete, Rename, Properties and what other apps add; Shift+right-click for more), plus Show in panel folder and Move to Desktop or another panel
   - Explorer's keyboard shortcuts: Enter opens, F2 renames, Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste, Delete or Ctrl+D moves to the Recycle Bin (Shift+Delete too: the app never deletes outright), Alt+Enter shows Properties, Ctrl+Shift+C copies the path, Ctrl+Shift+N makes a new folder, Ctrl+A selects all, arrow keys, Home and End move, F5 refreshes, and the context menu key or Shift+F10 opens the menu
-- **Panel background menu:** View, Sort by, Paste, New folder, Open folder in Explorer, Panel settings, New panel.
+- **Duplicate a panel** from its title bar menu, its background menu or its settings: the duplicate has the same size and look (colors, title bar, background picture, texture and effect), sits a little below and right of the original, and starts empty with a folder of its own.
+- **Panel background menu:** View, Sort by, Paste, New folder, Open folder in Explorer, Panel settings, New panel, Duplicate panel, Copy look from.
 - **Tray menu:** New panel, Show/Hide panels, Lock panels, Start with Windows, Settings…, Open config folder, Quit.
 - **Safe deletes.** Deleting a panel asks whether to move its items back to the Desktop. Files are never deleted.
 

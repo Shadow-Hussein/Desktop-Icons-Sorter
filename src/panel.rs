@@ -4,6 +4,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use sorter::background::{
+    Pt, SCATTER_PERIOD, Shape, Tile, image_rect, pixel_block, scatter as scatter_at, seed_of,
+    texture_tile, tile_origins,
+};
 use sorter::folder::PanelItem;
 use sorter::geometry::{
     SNAP_DISTANCE, SnapLines, expanded_from_collapsed, resize_bounds, snap_move, snap_resize,
@@ -11,14 +15,16 @@ use sorter::geometry::{
 };
 use sorter::grid::layout_grid;
 use sorter::model::{
-    Bounds, COLLAPSE_ANIMATION_MS, CollapseDirection, HeaderShape, PanelConfig, ResizeEdge, SortBy,
-    TitleBarStyle, collapsed_length, icon_pixels,
+    BgEffect, BgTexture, Bounds, COLLAPSE_ANIMATION_MS, CollapseDirection, HeaderShape, ImageFit,
+    PanelConfig, ResizeEdge, SortBy, TitleBarStyle, collapsed_length, icon_pixels,
 };
 use sorter::panel_layout::{Grid, Hit, Layout, PEEK_ICON, Rect, hit_test, layout};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
-use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
+use windows::Win32::Graphics::Direct2D::{ID2D1Bitmap, ID2D1PathGeometry};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows_numerics::{Matrix3x2, Vector2};
 
+use crate::win::bgimage::Image;
 use crate::win::icons::{IconCache, Lookup};
 use crate::win::render::{Canvas, Font, Rgba};
 use crate::win::watch::DirWatch;
@@ -294,6 +300,231 @@ fn draw_soft_bar(c: &mut Canvas, l: &Layout, fill: Rgba) {
     c.fill_masked_gradient(r, outer, inner, &across, start, end, &along);
 }
 
+/// What a background is made of: for blur and pixelate the wallpaper behind
+/// the panel, then a color, a picture, a texture and an effect over them.
+pub struct Background<'a> {
+    pub color: Rgba,
+    /// The monitor wallpapers behind the panel and where each goes, from the panel's corner.
+    pub wallpaper: &'a [(Image, Rect)],
+    pub image: Option<&'a Image>,
+    pub image_opacity: f32,
+    pub fit: ImageFit,
+    pub texture: BgTexture,
+    pub texture_color: Rgba,
+    pub texture_opacity: f32,
+    /// The texture's size: the panel's setting, times smaller in settings pictures.
+    pub texture_scale: f32,
+    /// Scatters the texture this panel's way.
+    pub scatter: Option<u32>,
+    pub effect: BgEffect,
+    pub strength: f32,
+}
+
+impl<'a> Background<'a> {
+    pub fn of(p: &PanelConfig, image: Option<&'a Image>, wallpaper: &'a [(Image, Rect)]) -> Self {
+        Self {
+            color: Rgba::hex(&p.bg_color, p.bg_opacity as f32),
+            wallpaper,
+            image,
+            image_opacity: p.bg_image_opacity as f32,
+            fit: p.bg_image_fit,
+            texture: p.texture,
+            texture_color: Rgba::hex(&p.texture_color, 1.0),
+            texture_opacity: p.texture_opacity as f32,
+            texture_scale: p.texture_scale as f32,
+            scatter: p.texture_random.then(|| seed_of(&p.id)),
+            effect: p.bg_effect,
+            strength: p.bg_effect_strength as f32,
+        }
+    }
+}
+
+/// Fills `r` (rounded by `radius`) with background `b`. Each part is clipped
+/// in a layer of its own: nested layers each keep a panel-sized surface.
+pub fn draw_background(c: &mut Canvas, r: Rect, radius: f32, b: &Background) {
+    let pixelate = b.effect == BgEffect::Pixelate;
+    if !b.wallpaper.is_empty() && b.effect.uses_wallpaper() {
+        // Blur is in the decoded pictures already; pixelate is drawn here.
+        let walls = |c: &mut Canvas, o: Rect| {
+            for (wall, at) in b.wallpaper {
+                let dest = Rect::new(o.x + at.x, o.y + at.y, at.w, at.h);
+                c.bitmap(&wall.bitmap, dest, 1.0, false);
+            }
+        };
+        if pixelate {
+            pixelated(c, r, radius, b.strength, walls);
+        } else if c.push_layer(r, radius, 1.0) {
+            walls(c, r);
+            c.pop_layer();
+        }
+    }
+    c.fill_round(r, radius, b.color);
+    let layers = b.image.is_some() || b.texture != BgTexture::None;
+    if layers && pixelate {
+        pixelated(c, r, radius, b.strength, |o, local| draw_layers(o, local, 0.0, b));
+    } else if layers {
+        draw_layers(c, r, radius, b);
+    }
+    let overlay = !matches!(b.effect, BgEffect::None | BgEffect::Pixelate | BgEffect::Blur);
+    if overlay && c.push_layer(r, radius, 1.0) {
+        draw_effect(c, r, b);
+        c.pop_layer();
+    }
+}
+
+/// Draws with `draw` (given `r` moved to 0, 0) at one pixel per block, then
+/// shows it large without smoothing, clipped to `r` rounded by `radius`.
+fn pixelated(
+    c: &mut Canvas,
+    r: Rect,
+    radius: f32,
+    strength: f32,
+    draw: impl FnOnce(&mut Canvas, Rect),
+) {
+    let block = pixel_block(strength as f64);
+    let (pw, ph) = ((r.w / block).ceil() as u32, (r.h / block).ceil() as u32);
+    let local = Rect::new(0.0, 0.0, r.w, r.h);
+    let small = c.offscreen(r.w, r.h, pw, ph, |o| draw(o, local));
+    if let Some(small) = small
+        && c.push_layer(r, radius, 1.0)
+    {
+        let shown = Rect::new(r.x, r.y, pw as f32 * block, ph as f32 * block);
+        c.bitmap(&small, shown, 1.0, true);
+        c.pop_layer();
+    }
+}
+
+/// Most pixels across a scattered texture's repeat, so its picture stays small.
+const MAX_REPEAT_PX: f32 = 512.0;
+
+/// The image and the texture.
+fn draw_layers(c: &mut Canvas, r: Rect, radius: f32, b: &Background) {
+    if let Some(img) = b.image
+        && c.push_layer(r, radius, 1.0)
+    {
+        let size = unsafe { img.bitmap.GetPixelSize() };
+        if b.fit == ImageFit::Tile {
+            c.tile_bitmap(&img.bitmap, r, 0.0, (r.x, r.y), img.dip_per_px, b.image_opacity);
+        } else {
+            let dest = image_rect(size.width as f32, size.height as f32, r, b.fit);
+            c.bitmap(&img.bitmap, dest, b.image_opacity, false);
+        }
+        c.pop_layer();
+    }
+    let Some(tile) = texture_tile(b.texture) else { return };
+    // One repeat of the pattern is drawn small and then repeated by a brush:
+    // a few dozen shapes instead of hundreds, which the software renderer
+    // would otherwise keep scratch memory for. A cell is a whole number of
+    // pixels, so it wraps without seams. Staggered patterns repeat every two
+    // rows, scattered ones every few cells (as many as fit `MAX_REPEAT_PX`).
+    let px = (tile.cell * b.texture_scale * c.scale).round().max(2.0);
+    let tile = Tile { cell: px / c.scale, ..tile };
+    let (cols, rows) = match b.scatter {
+        Some(_) => {
+            let n = ((MAX_REPEAT_PX / px) as i32 / 2 * 2).clamp(2, SCATTER_PERIOD);
+            (n, n)
+        }
+        None => (1, if tile.stagger { 2 } else { 1 }),
+    };
+    let repeat = Rect::new(0.0, 0.0, tile.cell * cols as f32, tile.cell * rows as f32);
+    // Drawn solid and faded as a whole, so overlapping shapes don't darken.
+    let color = b.texture_color;
+    let scatter = b.scatter.map(|seed| (seed, cols));
+    let size = (px as u32 * cols as u32, px as u32 * rows as u32);
+    let drawn = c.offscreen(repeat.w, repeat.h, size.0, size.1, |o| {
+        draw_texture(o, repeat, &tile, color, scatter)
+    });
+    if let Some(bitmap) = drawn {
+        c.tile_bitmap(&bitmap, r, radius, (r.x, r.y), 1.0, b.texture_opacity);
+    }
+}
+
+/// Texture `tile` in `color` over `r`, each cell's shapes drawn in full so
+/// the ones reaching past `r`'s edges show there too. With `scatter` (a seed
+/// and how many cells it repeats over), each cell is moved and sized its own way.
+fn draw_texture(c: &mut Canvas, r: Rect, tile: &Tile, color: Rgba, scatter: Option<(u32, i32)>) {
+    let k = tile.cell;
+    let at = |p: Pt| (p.0 * k, p.1 * k);
+    // Paths are made once in cell units and moved to each cell.
+    let paths: Vec<Option<ID2D1PathGeometry>> = tile
+        .shapes
+        .iter()
+        .map(|s| match s {
+            Shape::Curve { start, segs, .. } => {
+                let segs: Vec<[Pt; 3]> = segs.iter().map(|s| s.map(at)).collect();
+                c.curve_path(at(*start), &segs)
+            }
+            Shape::Poly(pts) => c.poly_path(&pts.iter().copied().map(at).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .collect();
+    for (ox, oy) in tile_origins(r, tile) {
+        let mut shift = Matrix3x2::translation(ox, oy);
+        if let Some((seed, period)) = scatter {
+            let row = ((oy - r.y) / k).round() as i32;
+            let stagger = if tile.stagger && row.rem_euclid(2) == 1 { k / 2.0 } else { 0.0 };
+            let col = ((ox - r.x + stagger) / k).round() as i32;
+            let (dx, dy, size) = scatter_at(seed, col, row, period);
+            let mid = Vector2 { X: k / 2.0, Y: k / 2.0 };
+            shift = Matrix3x2::scale_around(size, size, mid)
+                * Matrix3x2::translation(dx * k, dy * k)
+                * shift;
+        }
+        for (shape, path) in tile.shapes.iter().zip(&paths) {
+            match (shape, path) {
+                (Shape::Ellipse { c: center, rx, ry, rot }, _) => {
+                    let (cx, cy) = at(*center);
+                    let turn = Matrix3x2::rotation_around(*rot, Vector2 { X: cx, Y: cy });
+                    c.transform(turn * shift);
+                    c.fill_ellipse((cx, cy), rx * k, ry * k, color);
+                }
+                (Shape::Line { a, b, w }, _) => {
+                    c.transform(shift);
+                    c.line(at(*a), at(*b), color, w * k);
+                }
+                (Shape::Curve { w, .. }, Some(path)) => {
+                    c.transform(shift);
+                    if *w > 0.0 {
+                        c.stroke_path(path, color, w * k);
+                    } else {
+                        c.fill_path(path, color);
+                    }
+                }
+                (Shape::Poly(_), Some(path)) => {
+                    c.transform(shift);
+                    c.fill_path(path, color);
+                }
+                _ => {}
+            }
+        }
+    }
+    c.reset();
+}
+
+fn draw_effect(c: &mut Canvas, r: Rect, b: &Background) {
+    let s = b.strength;
+    match b.effect {
+        BgEffect::None | BgEffect::Pixelate | BgEffect::Blur => {}
+        BgEffect::Grain => c.grain(r, s),
+        BgEffect::Vignette => {
+            let stops = [(0.45, Rgba::black(0.0)), (1.0, Rgba::black(0.7 * s))];
+            c.fill_radial(r, r.center(), r.w * 0.72, r.h * 0.72, &stops);
+        }
+        BgEffect::Gradient => {
+            let stops = [(0.0, Rgba::black(0.0)), (1.0, Rgba::black(0.65 * s))];
+            c.fill_gradient(r, 0.0, (r.x, r.y), (r.x, r.bottom()), &stops);
+        }
+        BgEffect::Scanlines => {
+            let line = Rgba::black(0.4 * s);
+            let mut y = r.y + 1.0;
+            while y < r.bottom() {
+                c.fill_rect(Rect::new(r.x, y, r.w, 1.0), line);
+                y += 3.0;
+            }
+        }
+    }
+}
+
 /// An item's tile: highlight, icon (or a placeholder while it loads), the
 /// shortcut arrow and the name.
 #[allow(clippy::too_many_arguments)]
@@ -308,14 +539,21 @@ fn draw_item(
     selected: bool,
     hovered: bool,
 ) {
+    let icon = Rect::new(tile.x + (tile.w - icon_dip) / 2.0, tile.y + 7.0, icon_dip, icon_dip);
+    // A selected item shows its whole name, which can run past its tile;
+    // the highlight grows to take it in (selected items are drawn last).
+    let label_h = if selected { 200.0 } else { 31.0 };
+    let label = Rect::new(tile.x + 3.0, icon.bottom() + 4.0, tile.w - 6.0, label_h);
     if selected {
-        c.fill_round(tile, 6.0, Rgba(46.0 / 255.0, 156.0 / 255.0, 240.0 / 255.0, 0.3));
-        c.stroke_round(tile, 6.0, Rgba(120.0 / 255.0, 190.0 / 255.0, 1.0, 0.65), 1.0);
+        let name_h = c.gfx().measure(&item.display_name, Font::Label, label.w).1;
+        let h = tile.h.max(label.y + name_h + 5.0 - tile.y);
+        let r = Rect::new(tile.x, tile.y, tile.w, h);
+        c.fill_round(r, 6.0, Rgba(46.0 / 255.0, 156.0 / 255.0, 240.0 / 255.0, 0.3));
+        c.stroke_round(r, 6.0, Rgba(120.0 / 255.0, 190.0 / 255.0, 1.0, 0.65), 1.0);
     } else if hovered {
         c.fill_round(tile, 6.0, Rgba::white(0.1));
         c.stroke_round(tile, 6.0, Rgba::white(0.12), 1.0);
     }
-    let icon = Rect::new(tile.x + (tile.w - icon_dip) / 2.0, tile.y + 7.0, icon_dip, icon_dip);
     let px = (icon_dip * c.scale).round() as i32;
     let drawn = draw_icon(c, icons, missing, item, icon, px);
     if drawn && item.is_shortcut {
@@ -326,9 +564,10 @@ fn draw_item(
             c.image(&o, icon);
         }
     }
-    let label_h = if selected { 200.0 } else { 31.0 };
-    let label = Rect::new(tile.x + 3.0, icon.bottom() + 4.0, tile.w - 6.0, label_h);
-    c.text_shadowed(&item.display_name, Font::Label, label, text, 0.85);
+    // The dark shadow that keeps names readable on any wallpaper smears
+    // them on the blue highlight, so it's much lighter there.
+    let shadow = if selected { 0.3 } else { 0.85 };
+    c.text_shadowed(&item.display_name, Font::Label, label, text, shadow);
 }
 
 /// Draws an item's icon into `r`; false (and a placeholder) when it isn't loaded yet.
@@ -373,6 +612,10 @@ pub struct Scene<'a> {
     pub slot: Option<usize>,
     /// Items being dragged out of this panel are left out of the grid.
     pub hidden_item: Option<&'a str>,
+    /// The background image, once loaded.
+    pub image: Option<&'a Image>,
+    /// The monitor wallpapers behind the panel (for blur and pixelate) and where they go.
+    pub wallpaper: &'a [(Image, Rect)],
 }
 
 /// Draws the whole panel. Sets `missing` when an icon still has to be loaded.
@@ -388,8 +631,9 @@ pub fn draw(c: &mut Canvas, s: &Scene, icons: &mut IconCache, missing: &mut bool
     // Background. A little alpha even at 0% opacity, or clicks would fall
     // through the transparent parts of the window to the desktop.
     if !clear {
-        let bg = Rgba::hex(&p.bg_color, (p.bg_opacity as f32).max(2.0 / 255.0));
-        c.fill_round(l.panel, rounded, bg);
+        let mut bg = Background::of(p, s.image, s.wallpaper);
+        bg.color = bg.color.with_alpha(bg.color.3.max(2.0 / 255.0));
+        draw_background(c, l.panel, rounded, &bg);
         c.stroke_round(l.panel, rounded, Rgba::white(0.14), 1.0);
     }
     if s.drop_active {

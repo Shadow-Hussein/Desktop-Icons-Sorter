@@ -8,8 +8,8 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GWLP_HWNDPARENT, GetWindowLongPtrW, HWND_BOTTOM, IsWindow, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos,
+    FindWindowW, GA_ROOT, GWLP_HWNDPARENT, GetAncestor, GetClassNameW, GetWindowLongPtrW,
+    HWND_BOTTOM, IsWindow, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos,
 };
 use windows::core::{PCWSTR, w};
 
@@ -36,6 +36,19 @@ pub fn attach(hwnd: HWND) {
 pub fn send_to_bottom(hwnd: HWND) {
     let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
     let _ = unsafe { SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, flags) };
+}
+
+/// Whether `hwnd` is the desktop itself (Progman, or the WorkerW that hosts
+/// the icons once the wallpaper has been changed), as when it's clicked.
+pub fn is_desktop(hwnd: HWND) -> bool {
+    if hwnd.is_invalid() {
+        return false;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let mut name = [0u16; 16];
+    let len = unsafe { GetClassNameW(root, &mut name) } as usize;
+    let class = String::from_utf16_lossy(&name[..len]);
+    class == "Progman" || class == "WorkerW"
 }
 
 /// True when the window's owner is gone or isn't the current Progman, as

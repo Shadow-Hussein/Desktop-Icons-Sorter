@@ -84,6 +84,85 @@ pub enum AddMode {
     Move,
 }
 
+/// A finish drawn over a panel's background. One at a time, at a strength.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BgEffect {
+    #[default]
+    None,
+    /// Frosted glass: the wallpaper behind the panel and its picture, blurred.
+    Blur,
+    /// Big square pixels: the wallpaper behind the panel, its picture and its texture.
+    Pixelate,
+    Grain,
+    Vignette,
+    Gradient,
+    Scanlines,
+}
+
+impl BgEffect {
+    pub const ALL: [BgEffect; 7] = [
+        Self::None,
+        Self::Blur,
+        Self::Pixelate,
+        Self::Grain,
+        Self::Vignette,
+        Self::Gradient,
+        Self::Scanlines,
+    ];
+
+    /// Blur and pixelate change the wallpaper behind the panel, so the panel shows it.
+    pub fn uses_wallpaper(self) -> bool {
+        matches!(self, Self::Blur | Self::Pixelate)
+    }
+}
+
+/// A pattern tiled over a panel's background, in one color.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BgTexture {
+    #[default]
+    None,
+    Flowers,
+    Vines,
+    Leaves,
+    Dots,
+    Stripes,
+    Waves,
+    Stars,
+    Hearts,
+    Cracks,
+}
+
+impl BgTexture {
+    pub const ALL: [BgTexture; 10] = [
+        Self::None,
+        Self::Flowers,
+        Self::Vines,
+        Self::Leaves,
+        Self::Dots,
+        Self::Stripes,
+        Self::Waves,
+        Self::Stars,
+        Self::Hearts,
+        Self::Cracks,
+    ];
+}
+
+/// How a background image fills the panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageFit {
+    /// Covers the panel, cropping what doesn't fit.
+    #[default]
+    Fill,
+    /// Shows all of it, centered.
+    Fit,
+    Stretch,
+    /// Repeats it at its own size.
+    Tile,
+}
+
 /// A window edge or corner being dragged to resize.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResizeEdge {
@@ -190,6 +269,63 @@ pub struct PanelConfig {
     pub order: Vec<String>,
     /// New items that appear on the user's Desktop go into this panel. At most one panel has it.
     pub catch_new_items: bool,
+    // The background's image, texture and effect. Left out of the file while
+    // at their defaults, so a config without them stays as it was.
+    /// Image file drawn over the background color; empty for none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bg_image: String,
+    #[serde(serialize_with = "js_number", skip_serializing_if = "is_default_image_opacity")]
+    pub bg_image_opacity: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub bg_image_fit: ImageFit,
+    #[serde(skip_serializing_if = "is_default")]
+    pub texture: BgTexture,
+    #[serde(skip_serializing_if = "is_default_texture_color")]
+    pub texture_color: String,
+    #[serde(serialize_with = "js_number", skip_serializing_if = "is_default_texture_opacity")]
+    pub texture_opacity: f64,
+    /// Texture size, `MIN_TEXTURE_SCALE`–`MAX_TEXTURE_SCALE` (1 is its normal size).
+    #[serde(serialize_with = "js_number", skip_serializing_if = "is_default_texture_scale")]
+    pub texture_scale: f64,
+    /// Scatters the texture: each shape a little off its spot and a little bigger or smaller.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub texture_random: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub bg_effect: BgEffect,
+    /// How strong the effect is, 0–1.
+    #[serde(serialize_with = "js_number", skip_serializing_if = "is_default_effect_strength")]
+    pub bg_effect_strength: f64,
+}
+
+pub const DEFAULT_IMAGE_OPACITY: f64 = 1.0;
+pub const DEFAULT_TEXTURE_COLOR: &str = "#808080";
+pub const DEFAULT_TEXTURE_OPACITY: f64 = 0.35;
+pub const DEFAULT_EFFECT_STRENGTH: f64 = 0.5;
+pub const MIN_TEXTURE_SCALE: f64 = 0.5;
+pub const MAX_TEXTURE_SCALE: f64 = 2.0;
+
+fn is_default_texture_scale(v: &f64) -> bool {
+    *v == 1.0
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+fn is_default_image_opacity(v: &f64) -> bool {
+    *v == DEFAULT_IMAGE_OPACITY
+}
+
+fn is_default_texture_color(v: &str) -> bool {
+    v.eq_ignore_ascii_case(DEFAULT_TEXTURE_COLOR)
+}
+
+fn is_default_texture_opacity(v: &f64) -> bool {
+    *v == DEFAULT_TEXTURE_OPACITY
+}
+
+fn is_default_effect_strength(v: &f64) -> bool {
+    *v == DEFAULT_EFFECT_STRENGTH
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

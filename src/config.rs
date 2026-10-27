@@ -16,9 +16,10 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::model::{
-    AddMode, AppConfig, Bounds, CollapseAlign, CollapseDirection, HeaderShape, IconSize,
-    MAX_PANEL_ITEMS, MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH, PanelConfig, PlacedItem, SortBy,
-    TitleBarStyle,
+    AddMode, AppConfig, BgEffect, BgTexture, Bounds, CollapseAlign, CollapseDirection,
+    DEFAULT_EFFECT_STRENGTH, DEFAULT_IMAGE_OPACITY, DEFAULT_TEXTURE_COLOR, DEFAULT_TEXTURE_OPACITY,
+    HeaderShape, IconSize, ImageFit, MAX_PANEL_ITEMS, MAX_TEXTURE_SCALE, MIN_PANEL_HEIGHT,
+    MIN_PANEL_WIDTH, MIN_TEXTURE_SCALE, PanelConfig, PlacedItem, SortBy, TitleBarStyle,
 };
 
 /// How long after a change the config is written, so a burst of changes is one write.
@@ -189,6 +190,10 @@ fn upgrade_panel(o: &Map<String, Value>) -> Map<String, Value> {
         o.insert("headerShape".into(), Value::String("default".into()));
         o.insert("titleBarStyle".into(), style);
     }
+    // The first test build called the blur effect "glossy".
+    if o.get("bgEffect").and_then(Value::as_str) == Some("glossy") {
+        o.insert("bgEffect".into(), Value::String("blur".into()));
+    }
     o
 }
 
@@ -216,6 +221,18 @@ pub fn parse_panel(v: &Value) -> Parsed<PanelConfig> {
         cells: optional(o, "cells", Vec::new(), |v| array(v, MAX_PANEL_ITEMS, placed_item))?,
         order: optional(o, "order", Vec::new(), |v| array(v, MAX_PANEL_ITEMS, file_name))?,
         catch_new_items: optional(o, "catchNewItems", false, boolean)?,
+        bg_image: optional(o, "bgImage", String::new(), |v| string(v, 0, 32_767))?,
+        bg_image_opacity: optional(o, "bgImageOpacity", DEFAULT_IMAGE_OPACITY, opacity)?,
+        bg_image_fit: optional(o, "bgImageFit", ImageFit::Fill, one_of)?,
+        texture: optional(o, "texture", BgTexture::None, one_of)?,
+        texture_color: optional(o, "textureColor", DEFAULT_TEXTURE_COLOR.into(), hex_color)?,
+        texture_opacity: optional(o, "textureOpacity", DEFAULT_TEXTURE_OPACITY, opacity)?,
+        texture_scale: optional(o, "textureScale", 1.0, |v| {
+            number(v, MIN_TEXTURE_SCALE, MAX_TEXTURE_SCALE)
+        })?,
+        texture_random: optional(o, "textureRandom", false, boolean)?,
+        bg_effect: optional(o, "bgEffect", BgEffect::None, one_of)?,
+        bg_effect_strength: optional(o, "bgEffectStrength", DEFAULT_EFFECT_STRENGTH, opacity)?,
     })
 }
 
@@ -309,6 +326,63 @@ pub fn create_panel(title: &str, bounds: Bounds, folder_path: &str) -> PanelConf
         "folderPath": folder_path,
     });
     parse_panel(&raw).expect("a new panel is valid")
+}
+
+/// A new panel that looks like `src`: same size, colors, shape and background,
+/// with its own id and folder and none of `src`'s items. It doesn't catch new
+/// desktop items, since only one panel may.
+pub fn duplicate_panel(src: &PanelConfig, bounds: Bounds, folder_path: &str) -> PanelConfig {
+    let title: String = if src.title.is_empty() {
+        String::new()
+    } else {
+        // Titles are at most 200 UTF-16 units; make room for " copy".
+        let mut t = String::new();
+        for c in src.title.chars() {
+            if js_len(&t) + c.len_utf16() > 195 {
+                break;
+            }
+            t.push(c);
+        }
+        format!("{} copy", t.trim_end())
+    };
+    PanelConfig {
+        id: random_uuid(),
+        title,
+        bounds,
+        folder_path: folder_path.to_owned(),
+        cells: Vec::new(),
+        order: Vec::new(),
+        catch_new_items: false,
+        ..src.clone()
+    }
+}
+
+/// Panel `to` with the look of `from`: colors, title bar, icon size and
+/// background. What's its own stays: title, folder and items, where it is
+/// and which way it collapses, sort order, stacking and catching.
+pub fn with_look_of(to: &PanelConfig, from: &PanelConfig) -> PanelConfig {
+    PanelConfig {
+        header_shape: from.header_shape,
+        title_bar_style: from.title_bar_style,
+        collapse_align: from.collapse_align,
+        bg_color: from.bg_color.clone(),
+        bg_opacity: from.bg_opacity,
+        title_bar_color: from.title_bar_color.clone(),
+        title_bar_opacity: from.title_bar_opacity,
+        title_text_color: from.title_text_color.clone(),
+        icon_size: from.icon_size,
+        bg_image: from.bg_image.clone(),
+        bg_image_opacity: from.bg_image_opacity,
+        bg_image_fit: from.bg_image_fit,
+        texture: from.texture,
+        texture_color: from.texture_color.clone(),
+        texture_opacity: from.texture_opacity,
+        texture_scale: from.texture_scale,
+        texture_random: from.texture_random,
+        bg_effect: from.bg_effect,
+        bg_effect_strength: from.bg_effect_strength,
+        ..to.clone()
+    }
 }
 
 /// Turns a panel title into a safe Windows folder name.
@@ -456,6 +530,164 @@ mod tests {
         assert_eq!(p.sort_by, SortBy::Custom);
         assert!(p.cells.is_empty() && p.order.is_empty());
         assert!(!p.catch_new_items);
+        assert_eq!(p.bg_image, "");
+        assert_eq!(p.bg_image_opacity, 1.0);
+        assert_eq!(p.bg_image_fit, ImageFit::Fill);
+        assert_eq!(p.texture, BgTexture::None);
+        assert_eq!(p.texture_color, "#808080");
+        assert_eq!(p.texture_opacity, 0.35);
+        assert_eq!(p.texture_scale, 1.0);
+        assert!(!p.texture_random);
+        assert_eq!(p.bg_effect, BgEffect::None);
+        assert_eq!(p.bg_effect_strength, 0.5);
+    }
+
+    #[test]
+    fn reads_background_styling() {
+        let (config, recovered) = parse(json!({ "panels": [panel(json!({
+            "bgImage": "C:\\pics\\sky.png",
+            "bgImageOpacity": 0.6,
+            "bgImageFit": "tile",
+            "texture": "vines",
+            "textureColor": "#112233",
+            "textureOpacity": 0.2,
+            "textureScale": 1.5,
+            "textureRandom": true,
+            "bgEffect": "pixelate",
+            "bgEffectStrength": 1,
+        }))] }));
+        assert!(!recovered);
+        let p = &config.panels[0];
+        assert_eq!(p.bg_image, "C:\\pics\\sky.png");
+        assert_eq!(p.bg_image_opacity, 0.6);
+        assert_eq!(p.bg_image_fit, ImageFit::Tile);
+        assert_eq!(p.texture, BgTexture::Vines);
+        assert_eq!(p.texture_color, "#112233");
+        assert_eq!(p.texture_opacity, 0.2);
+        assert_eq!(p.texture_scale, 1.5);
+        assert!(p.texture_random);
+        assert_eq!(p.bg_effect, BgEffect::Pixelate);
+        assert_eq!(p.bg_effect_strength, 1.0);
+    }
+
+    #[test]
+    fn turns_the_old_glossy_effect_into_blur() {
+        let (config, recovered) =
+            parse(json!({ "panels": [panel(json!({ "bgEffect": "glossy" }))] }));
+        assert!(!recovered);
+        assert_eq!(config.panels[0].bg_effect, BgEffect::Blur);
+    }
+
+    #[test]
+    fn drops_a_panel_with_bad_background_styling() {
+        for bad in [
+            json!({ "bgImage": 3 }),
+            json!({ "bgImageOpacity": 1.5 }),
+            json!({ "bgImageFit": "cover" }),
+            json!({ "texture": "plaid" }),
+            json!({ "textureColor": "grey" }),
+            json!({ "textureOpacity": -0.1 }),
+            json!({ "textureScale": 0.2 }),
+            json!({ "textureScale": 3 }),
+            json!({ "textureRandom": "yes" }),
+            json!({ "bgEffect": "shiny" }),
+            json!({ "bgEffectStrength": "high" }),
+        ] {
+            assert!(parse(json!({ "panels": [panel(bad.clone())] })).0.panels.is_empty(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn leaves_default_background_styling_out_of_the_file() {
+        let (config, _) = parse(json!({ "panels": [panel(json!({}))] }));
+        let saved = serde_json::to_value(&config.panels[0]).unwrap();
+        for key in ["bgImage", "bgImageOpacity", "texture", "textureColor", "bgEffect"] {
+            assert!(saved.get(key).is_none(), "{key}");
+        }
+        let mut p = config.panels[0].clone();
+        p.texture = BgTexture::Stars;
+        p.bg_effect_strength = 0.8;
+        let saved = serde_json::to_value(&p).unwrap();
+        assert_eq!(saved["texture"], "stars");
+        assert_eq!(saved["bgEffectStrength"], 0.8);
+        assert_eq!(parse_panel(&saved).unwrap(), p);
+    }
+
+    #[test]
+    fn duplicates_a_panel_look_without_its_items() {
+        let (config, _) = parse(json!({ "panels": [panel(json!({
+            "title": "Games",
+            "bgColor": "#123456",
+            "headerShape": "folder",
+            "texture": "flowers",
+            "catchNewItems": true,
+            "cells": [{ "name": "a.lnk", "col": 0, "row": 0 }],
+            "order": ["a.lnk"],
+        }))] }));
+        let src = &config.panels[0];
+        let b = Bounds::new(50, 60, 300, 200);
+        let copy = duplicate_panel(src, b, "C:\\Games (2)");
+        assert_ne!(copy.id, src.id);
+        assert_eq!(copy.title, "Games copy");
+        assert_eq!(copy.bounds, b);
+        assert_eq!(copy.folder_path, "C:\\Games (2)");
+        assert_eq!(copy.bg_color, "#123456");
+        assert_eq!(copy.header_shape, HeaderShape::Folder);
+        assert_eq!(copy.texture, BgTexture::Flowers);
+        assert!(copy.cells.is_empty() && copy.order.is_empty());
+        assert!(!copy.catch_new_items);
+        assert!(parse_panel(&serde_json::to_value(&copy).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn copies_another_panels_look_and_keeps_its_own_things() {
+        let (config, _) = parse(json!({ "panels": [
+            panel(json!({
+                "id": "from", "title": "Games", "folderPath": "C:\\Games",
+                "bgColor": "#123456", "bgOpacity": 0.8, "titleBarStyle": "pill",
+                "headerShape": "folder", "iconSize": "large", "texture": "cracks",
+                "textureScale": 1.5, "bgEffect": "blur", "bgImage": "C:\\sky.png",
+                "collapseDirection": "left", "sortBy": "name", "catchNewItems": true,
+            })),
+            panel(json!({
+                "id": "to", "title": "Work", "folderPath": "C:\\Work", "collapsed": true,
+                "collapseDirection": "down", "sortBy": "type",
+                "bounds": { "x": 500, "y": 400, "width": 300, "height": 200 },
+                "cells": [{ "name": "a.lnk", "col": 1, "row": 0 }],
+            })),
+        ] }));
+        let (from, to) = (&config.panels[0], &config.panels[1]);
+        let p = with_look_of(to, from);
+        // The look comes from `from`...
+        assert_eq!(p.bg_color, "#123456");
+        assert_eq!(p.bg_opacity, 0.8);
+        assert_eq!(p.title_bar_style, TitleBarStyle::Pill);
+        assert_eq!(p.header_shape, HeaderShape::Folder);
+        assert_eq!(p.icon_size, IconSize::Large);
+        assert_eq!(p.texture, BgTexture::Cracks);
+        assert_eq!(p.texture_scale, 1.5);
+        assert_eq!(p.bg_effect, BgEffect::Blur);
+        assert_eq!(p.bg_image, "C:\\sky.png");
+        // ...and the rest stays `to`'s.
+        assert_eq!(
+            (p.id.as_str(), p.title.as_str(), p.folder_path.as_str()),
+            ("to", "Work", "C:\\Work")
+        );
+        assert_eq!(p.bounds, to.bounds);
+        assert!(p.collapsed && !p.catch_new_items);
+        assert_eq!(p.collapse_direction, CollapseDirection::Down);
+        assert_eq!(p.sort_by, SortBy::Type);
+        assert_eq!(p.cells, to.cells);
+    }
+
+    #[test]
+    fn duplicate_keeps_a_long_title_within_the_limit() {
+        let (config, _) = parse(json!({ "panels": [panel(json!({ "title": "é".repeat(200) }))] }));
+        let copy = duplicate_panel(&config.panels[0], Bounds::new(0, 0, 300, 200), "C:\\x");
+        assert!(js_len(&copy.title) <= 200);
+        assert!(copy.title.ends_with(" copy"));
+        let empty = PanelConfig { title: String::new(), ..config.panels[0].clone() };
+        assert_eq!(duplicate_panel(&empty, Bounds::new(0, 0, 300, 200), "C:\\x").title, "");
     }
 
     #[test]

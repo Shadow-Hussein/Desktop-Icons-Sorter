@@ -9,6 +9,7 @@ use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TD_INFORMATION_ICON, TDF_ALLOW_DIALOG_CANCELLATION,
     TDF_POSITION_RELATIVE_TO_WINDOW, TDF_USE_COMMAND_LINKS, TaskDialogIndirect,
 };
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName,
     SIGDN_FILESYSPATH,
@@ -68,6 +69,32 @@ pub fn choose_folder(owner: Option<HWND>, title: &str, start: &Path) -> Option<P
         let s = Wide::os(start.as_os_str());
         if let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(s.pcwstr(), None) {
             let _ = dialog.SetFolder(&folder);
+        }
+        dialog.Show(owner).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = name.to_string().ok();
+        windows::Win32::System::Com::CoTaskMemFree(Some(name.0 as *const _));
+        path.map(PathBuf::from)
+    }
+}
+
+/// Lets the user pick a picture file, starting in `start` (or Pictures).
+pub fn choose_image(owner: Option<HWND>, start: Option<&Path>) -> Option<PathBuf> {
+    let name = Wide::new("Pictures");
+    let spec = Wide::new("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff;*.jxr");
+    let types = [COMDLG_FILTERSPEC { pszName: name.pcwstr(), pszSpec: spec.pcwstr() }];
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog.SetFileTypes(&types).ok()?;
+        let t = Wide::new("Choose a background picture");
+        let _ = dialog.SetTitle(t.pcwstr());
+        if let Some(start) = start {
+            let s = Wide::os(start.as_os_str());
+            if let Ok(folder) = SHCreateItemFromParsingName::<_, _, IShellItem>(s.pcwstr(), None) {
+                let _ = dialog.SetFolder(&folder);
+            }
         }
         dialog.Show(owner).ok()?;
         let item = dialog.GetResult().ok()?;

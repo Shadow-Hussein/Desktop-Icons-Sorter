@@ -11,15 +11,20 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
+use sorter::background::{blur_radius, blur_reduce, pixel_block};
 use sorter::catcher::{self, Catcher};
-use sorter::config::{ConfigStore, SAVE_DEBOUNCE_MS, create_panel, folder_name_from_title};
+use sorter::config::{
+    ConfigStore, SAVE_DEBOUNCE_MS, create_panel, duplicate_panel, folder_name_from_title,
+    with_look_of,
+};
 use sorter::folder::{
     self, copy_into, list_items, move_into, place_in_order, prune_cells, rename_in_cells,
     rename_in_order, rename_item, same_path, sync_order,
 };
 use sorter::geometry::clamp_to_work_areas;
 use sorter::grid::{layout_grid, place_at};
-use sorter::model::{AddMode, Bounds, MAX_PANEL_ITEMS, PanelConfig, PlacedItem, SortBy};
+use sorter::model::{AddMode, BgEffect, Bounds, MAX_PANEL_ITEMS, PanelConfig, PlacedItem, SortBy};
+use sorter::panel_layout::Rect;
 use sorter::stack::stack_move;
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -29,11 +34,13 @@ use windows::core::{BOOL, PCWSTR, w};
 use crate::panel::{self, Anim, DropState, Panel, Scene, cells_of, current_layout, window_bounds};
 use crate::procs;
 use crate::settings::{Layer, SettingsWin};
+use crate::win::bgimage::{BgImages, Image, Kind, Want, wall_slot};
 use crate::win::dpi::{self, Monitor};
 use crate::win::edit::{Done, EditBox};
 use crate::win::icons::{IconCache, Lookup};
 use crate::win::render::{Font, Gfx};
 use crate::win::tray::Tray;
+use crate::win::wallpaper::{self, Wall};
 use crate::win::watch::{DirWatch, Report};
 use crate::win::{Wide, desktop_layer, dialogs, dragdrop, now_ms, shell, shellmenu};
 
@@ -98,6 +105,14 @@ pub enum Deferred {
         owner: HWND,
         panel: String,
     },
+    ChooseImage {
+        owner: HWND,
+        panel: String,
+    },
+    LookMenu {
+        owner: HWND,
+        panel: String,
+    },
     SortMenu {
         owner: HWND,
         panel: String,
@@ -124,6 +139,9 @@ pub struct App {
     pub store: ConfigStore,
     pub gfx: Gfx,
     pub icons: IconCache,
+    pub bg_images: BgImages,
+    /// Each monitor's wallpaper, read when a panel first needs it (blur, pixelate).
+    walls: Option<Vec<Wall>>,
     pub panels: Vec<Panel>,
     pub host: HWND,
     tray: Option<Tray>,
@@ -247,7 +265,9 @@ fn execute(d: Deferred) {
         Deferred::DeletePanel(id) => delete_panel_flow(&id),
         Deferred::ChooseColor { owner, panel, layer } => choose_color_flow(owner, &panel, layer),
         Deferred::ChooseFolder { owner, panel } => choose_folder_flow(owner, &panel),
+        Deferred::ChooseImage { owner, panel } => choose_image_flow(owner, &panel),
         Deferred::SortMenu { owner, panel } => crate::settings::sort_menu(owner, &panel),
+        Deferred::LookMenu { owner, panel } => crate::settings::look_menu(owner, &panel),
         Deferred::Quit => unsafe { PostQuitMessage(0) },
     }
 }
@@ -276,6 +296,8 @@ impl App {
             store,
             gfx: Gfx::new()?,
             icons: IconCache::default(),
+            bg_images: BgImages::default(),
+            walls: None,
             panels: Vec::new(),
             host,
             tray: None,
@@ -421,6 +443,129 @@ impl App {
         self.open_panel(&id);
     }
 
+    /// The monitor wallpapers panel `p` needs, when its effect shows the
+    /// wallpaper: those of the monitors its window at `rect` overlaps. Reads
+    /// the wallpaper settings the first time.
+    fn wall_wants(&mut self, p: &PanelConfig, rect: RECT, scale: f32) -> Vec<Want> {
+        if !p.bg_effect.uses_wallpaper() {
+            return Vec::new();
+        }
+        let walls = self.walls.get_or_insert_with(wallpaper::walls);
+        walls
+            .iter()
+            .filter(|w| {
+                let m = w.monitor;
+                m.left < rect.right
+                    && rect.left < m.right
+                    && m.top < rect.bottom
+                    && rect.top < m.bottom
+            })
+            .map(|w| effect_want(p, Want::wallpaper(w, scale), scale))
+            .collect()
+    }
+
+    /// The monitor wallpapers behind panel `p`'s window at `rect`, each with
+    /// where it goes from the window's corner (DIPs at `scale`), and whether
+    /// they're all decoded as wanted. Placed from where the window is right
+    /// now, so they stay put on screen while it moves or collapses.
+    pub fn wall_images(
+        &mut self,
+        p: &PanelConfig,
+        rect: RECT,
+        scale: f32,
+    ) -> (Vec<(Image, Rect)>, bool) {
+        let mut fresh = true;
+        let mut out = Vec::new();
+        for want in self.wall_wants(p, rect, scale) {
+            let (image, ok) = self.bg_images.get(&self.gfx, &wall_slot(&want), &want);
+            fresh &= ok;
+            if let (Some(image), Kind::Wallpaper { rect: m, .. }) = (image, &want.kind) {
+                let at = Rect::new(
+                    (m.0 - rect.left) as f32 / scale,
+                    (m.1 - rect.top) as f32 / scale,
+                    m.2 as f32 / scale,
+                    m.3 as f32 / scale,
+                );
+                out.push((image, at));
+            }
+        }
+        (out, fresh)
+    }
+
+    /// Decodes the monitor wallpapers panel `i` is missing, and drops those no panel uses.
+    fn load_walls(&mut self, i: usize) {
+        let Some(cfg) = self.config_of(i).cloned() else { return };
+        let (rect, scale) = (self.panels[i].rect, self.panels[i].scale);
+        for want in self.wall_wants(&cfg, rect, scale) {
+            let slot = wall_slot(&want);
+            if !self.bg_images.get(&self.gfx, &slot, &want).1 {
+                // Paths are lower-cased in `Want`, which opens the same file on Windows.
+                let path = want.path.clone();
+                self.bg_images.load(&self.gfx, &slot, &path, want);
+            }
+        }
+        let mut used = Vec::new();
+        for j in 0..self.panels.len() {
+            let Some(cfg) = self.config_of(j).cloned() else { continue };
+            let (rect, scale) = (self.panels[j].rect, self.panels[j].scale);
+            used.extend(self.wall_wants(&cfg, rect, scale).iter().map(wall_slot));
+        }
+        self.bg_images.retain_walls(&used);
+    }
+
+    /// Deselects panel `i`'s items, redrawing it if any were selected.
+    pub fn clear_selection(&mut self, i: usize) {
+        let panel = &mut self.panels[i];
+        if panel.selected.is_empty() {
+            return;
+        }
+        panel.selected.clear();
+        panel.anchor = None;
+        self.paint(i);
+    }
+
+    /// Deselects the items of every panel but `i`.
+    pub fn clear_other_selections(&mut self, i: usize) {
+        for j in (0..self.panels.len()).filter(|&j| j != i) {
+            self.clear_selection(j);
+        }
+    }
+
+    /// Gives panel `i` the look of panel `from` (an id).
+    pub fn copy_look(&mut self, i: usize, from: &str) {
+        let Some(from) = self.store.panel(from).cloned() else { return };
+        // Its old picture is no use now; the new one (if any) loads on the next paint.
+        let id = self.panels[i].id.clone();
+        self.bg_images.forget(&id);
+        self.update_panel(i, |p| *p = with_look_of(p, &from));
+    }
+
+    /// The other panels, as (id, title) for a "Copy look from" menu.
+    pub fn other_panels(&self, id: &str) -> Vec<(String, String)> {
+        let c = self.store.config();
+        c.panels
+            .iter()
+            .filter(|p| p.id != id)
+            .map(|p| {
+                let title = if p.title.is_empty() { "(untitled)".into() } else { p.title.clone() };
+                (p.id.clone(), title)
+            })
+            .collect()
+    }
+
+    /// Opens a new panel that looks like panel `i`, a little below and right of it.
+    pub fn duplicate_panel(&mut self, i: usize) {
+        let Some(src) = self.config_of(i).cloned() else { return };
+        let b = src.bounds;
+        let bounds = Bounds::new(b.x + 32, b.y + 32, b.width, b.height);
+        let mut panel = duplicate_panel(&src, bounds, "");
+        panel.folder_path = self.unique_folder(&panel.title).to_string_lossy().into_owned();
+        let id = panel.id.clone();
+        self.store.update(|c| c.panels.push(panel));
+        self.changed();
+        self.open_panel(&id);
+    }
+
     fn open_panel(&mut self, id: &str) {
         let areas = self.work_areas();
         let Some(p) = self.store.panel(id) else { return };
@@ -501,6 +646,7 @@ impl App {
         if hidden {
             // Nothing is shown, so nothing needs to be kept for drawing.
             self.icons.clear();
+            self.bg_images.clear();
             self.gfx.trim();
         } else {
             self.paint_all();
@@ -514,8 +660,11 @@ impl App {
     }
 
     /// Displays changed: re-read them, pull unreachable panels back and redraw.
+    /// Also after other setting changes, such as a new wallpaper: panels showing
+    /// it read it again (the old piece shows until the new one is ready).
     pub fn displays_changed(&mut self) {
         self.mons = dpi::monitors();
+        self.walls = None;
         let areas = self.work_areas();
         let fixes: Vec<(String, Bounds)> = self
             .store
@@ -587,8 +736,17 @@ impl App {
         }
         let title = if cfg.title.is_empty() { "Untitled" } else { &cfg.title };
         self.panels[i].title_len = self.gfx.measure(title, Font::Title, 10_000.0).0;
-        let App { gfx, icons, panels, .. } = self;
+        let want = bg_want(&cfg, scale);
+        let (walls, walls_fresh) = self.wall_images(&cfg, rect, scale);
+        let App { gfx, icons, panels, bg_images, .. } = self;
         let panel = &panels[i];
+        let (image, fresh) = match &want {
+            Some(w) => bg_images.get(gfx, &panel.id, w),
+            None => (None, true),
+        };
+        // A picture loads again at the new size once a resize is over, not on
+        // every step of it. A monitor's wallpaper doesn't depend on the panel.
+        let image_missing = (!fresh && panel.pointer.is_none()) || !walls_fresh;
         let l = current_layout(&cfg, panel);
         let cols = l.grid.map_or(1, |g| g.cols);
         let mut cells = cells_of(&cfg, &panel.items, cols);
@@ -614,8 +772,10 @@ impl App {
             cells: &cells,
             slot,
             hidden_item,
+            image: image.as_ref(),
+            wallpaper: &walls,
         };
-        let mut missing = false;
+        let mut missing = image_missing;
         let hwnd = panel.hwnd;
         if let Err(e) =
             gfx.present(hwnd, rect, scale, |c| panel::draw(c, &scene, icons, &mut missing))
@@ -666,6 +826,14 @@ impl App {
                 .map(|it| (it.path.clone(), it.modified_ms))
                 .collect(),
         };
+        let (scale, id, resting) = (panel.scale, panel.id.clone(), panel.pointer.is_none());
+        if let Some(want) = bg_want(&cfg, scale)
+            && resting
+            && !self.bg_images.get(&self.gfx, &id, &want).1
+        {
+            self.bg_images.load(&self.gfx, &id, &cfg.bg_image, want);
+        }
+        self.load_walls(i);
         let start = now_ms();
         for (path, mtime) in visible {
             if now_ms() - start > ICON_BUDGET_MS {
@@ -1294,8 +1462,36 @@ impl App {
         self.store.update(|c| c.panels.retain(|x| x.id != id));
         self.changed();
         self.close_settings_for(Some(id));
+        self.bg_images.forget(id);
         self.close_panel_window(i);
         self.sync_catcher();
+    }
+}
+
+/// What panel `p`'s background image should be decoded for: its file at the
+/// panel's expanded size (so collapsing doesn't reload it). None without an image.
+fn bg_want(p: &PanelConfig, scale: f32) -> Option<Want> {
+    if p.bg_image.is_empty() {
+        return None;
+    }
+    let px = |dip: i32| (dip as f32 * scale).round().max(1.0) as u32;
+    let target = (px(p.bounds.width), px(p.bounds.height));
+    Some(effect_want(p, Want::picture(&p.bg_image, p.bg_image_fit, target, scale), scale))
+}
+
+/// `want`, blurred for the blur effect or (a wallpaper piece) made smaller for pixelate.
+fn effect_want(p: &PanelConfig, want: Want, scale: f32) -> Want {
+    match p.bg_effect {
+        BgEffect::Blur => {
+            let radius = blur_radius(p.bg_effect_strength) * scale;
+            want.blurred(radius.round() as u32, blur_reduce(radius))
+        }
+        BgEffect::Pixelate if matches!(want.kind, Kind::Wallpaper { .. }) => {
+            let block = pixel_block(p.bg_effect_strength) * scale;
+            // A pixel per block at most: smaller than the blocks would be wasted.
+            want.reduced((block as u32).clamp(2, 12))
+        }
+        _ => want,
     }
 }
 
@@ -1338,10 +1534,12 @@ fn delete_panel_flow(id: &str) {
 /// Lets the user pick one of a panel's colors.
 fn choose_color_flow(owner: HWND, panel: &str, layer: Layer) {
     let Some(current) = with_app(|a| {
-        a.store.panel(panel).map(|p| match layer {
-            Layer::Background => p.bg_color.clone(),
-            Layer::Bar => p.title_bar_color.clone(),
-            Layer::Text => p.title_text_color.clone(),
+        a.store.panel(panel).and_then(|p| match layer {
+            Layer::Background => Some(p.bg_color.clone()),
+            Layer::Bar => Some(p.title_bar_color.clone()),
+            Layer::Text => Some(p.title_text_color.clone()),
+            Layer::Texture => Some(p.texture_color.clone()),
+            Layer::Image | Layer::TextureSize | Layer::Effect => None,
         })
     })
     .flatten() else {
@@ -1354,8 +1552,27 @@ fn choose_color_flow(owner: HWND, panel: &str, layer: Layer) {
                 Layer::Background => p.bg_color = hex,
                 Layer::Bar => p.title_bar_color = hex,
                 Layer::Text => p.title_text_color = hex,
+                Layer::Texture => p.texture_color = hex,
+                Layer::Image | Layer::TextureSize | Layer::Effect => {}
             });
         }
+    });
+}
+
+/// Lets the user pick a panel's background image.
+fn choose_image_flow(owner: HWND, panel: &str) {
+    let Some(current) = with_app(|a| a.store.panel(panel).map(|p| p.bg_image.clone())).flatten()
+    else {
+        return;
+    };
+    let start = Path::new(&current).parent().map(Path::to_path_buf);
+    let Some(file) = dialogs::choose_image(Some(owner), start.as_deref()) else { return };
+    with_app(|a| {
+        let Some(i) = a.panel_by_id(panel) else { return };
+        // Frees the old picture now rather than when the cache fills.
+        a.bg_images.forget(panel);
+        let path = file.to_string_lossy().into_owned();
+        a.update_panel(i, |p| p.bg_image = path);
     });
 }
 

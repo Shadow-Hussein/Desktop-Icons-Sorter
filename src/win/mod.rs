@@ -1,6 +1,7 @@
 //! Win32 side of the app: windows, drawing, shell calls. Everything here runs
 //! on the one UI thread.
 
+pub mod bgimage;
 pub mod darkmode;
 pub mod desktop_layer;
 pub mod dialogs;
@@ -13,6 +14,7 @@ pub mod render;
 pub mod shell;
 pub mod shellmenu;
 pub mod tray;
+pub mod wallpaper;
 pub mod watch;
 
 use std::ffi::OsStr;

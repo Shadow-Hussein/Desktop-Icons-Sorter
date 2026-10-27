@@ -6,18 +6,24 @@
 //! window drawn), since only one window is drawn at a time. `UpdateLayeredWindow`
 //! keeps its own copy of the pixels, so nothing needs to stay per window.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS, ID2D1Brush, ID2D1LinearGradientBrush,
+    D2D1_BITMAP_BRUSH_PROPERTIES, D2D1_BRUSH_PROPERTIES,
+    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, D2D1_EXTEND_MODE_WRAP, D2D1_LAYER_OPTIONS_NONE,
+    D2D1_LAYER_PARAMETERS, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, ID2D1Brush, ID2D1Geometry,
+    ID2D1GeometrySink, ID2D1GradientStopCollection, ID2D1Layer, ID2D1LinearGradientBrush,
+    ID2D1PathGeometry, ID2D1RenderTarget,
 };
 use windows::core::Interface;
 
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP,
-    D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BEZIER_SEGMENT,
+    D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED,
+    D2D1_FIGURE_END_OPEN, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
@@ -167,6 +173,9 @@ pub struct Gfx {
     brush: ID2D1SolidColorBrush,
     formats: [IDWriteTextFormat; FONTS],
     surface: Option<Surface>,
+    /// The grain effect's noise tile, made the first time it's drawn (16 KB),
+    /// with the generation it was made for.
+    grain: RefCell<Option<(u32, ID2D1Bitmap)>>,
     /// Bumped when the render target is recreated, so bitmaps made for the old one are dropped.
     pub generation: u32,
 }
@@ -252,7 +261,16 @@ impl Gfx {
             format(&dwrite, 11.0, b, n, c, false)?,
         ];
         let (rt, brush) = create_target(&d2d)?;
-        Ok(Self { d2d, dwrite, rt, brush, formats, surface: None, generation: 0 })
+        Ok(Self {
+            d2d,
+            dwrite,
+            rt,
+            brush,
+            formats,
+            surface: None,
+            grain: RefCell::new(None),
+            generation: 0,
+        })
     }
 
     fn text_format(&self, font: Font) -> &IDWriteTextFormat {
@@ -306,6 +324,17 @@ impl Gfx {
     /// Lets go of the drawing surface, e.g. after a large window got smaller.
     pub fn trim(&mut self) {
         self.surface = None;
+        self.grain = RefCell::new(None);
+    }
+
+    fn grain_bitmap(&self) -> Option<ID2D1Bitmap> {
+        let mut g = self.grain.borrow_mut();
+        if g.as_ref().is_none_or(|(gen_, _)| *gen_ != self.generation) {
+            let px = sorter::background::grain_tile();
+            let size = sorter::background::GRAIN_SIZE;
+            *g = self.bitmap(size, size, &px).ok().map(|b| (self.generation, b));
+        }
+        g.as_ref().map(|(_, b)| b.clone())
     }
 
     /// Draws a window `rect` (physical pixels, screen position and size) at
@@ -327,7 +356,8 @@ impl Gfx {
             self.rt.SetTransform(&Matrix3x2::identity());
             self.rt.Clear(Some(&Rgba::black(0.0).d2d()));
         }
-        let mut canvas = Canvas { gfx: self, scale };
+        let rt = ID2D1RenderTarget::clone(&self.rt);
+        let mut canvas = Canvas { gfx: self, rt, scale, layers: Vec::new() };
         draw(&mut canvas);
         if let Err(e) = unsafe { self.rt.EndDraw(None, None) } {
             // The target is lost only in rare cases (D2DERR_RECREATE_TARGET); start over.
@@ -379,7 +409,8 @@ impl Gfx {
             self.rt.BeginDraw();
             self.rt.SetTransform(&Matrix3x2::identity());
         }
-        let mut canvas = Canvas { gfx: self, scale };
+        let rt = ID2D1RenderTarget::clone(&self.rt);
+        let mut canvas = Canvas { gfx: self, rt, scale, layers: Vec::new() };
         draw(&mut canvas);
         if let Err(e) = unsafe { self.rt.EndDraw(None, None) } {
             let (rt, brush) = create_target(&self.d2d)?;
@@ -394,7 +425,11 @@ impl Gfx {
 /// Drawing calls for one frame, in DIPs.
 pub struct Canvas<'a> {
     gfx: &'a Gfx,
+    /// The window's target, or an offscreen one (see `offscreen`).
+    rt: ID2D1RenderTarget,
     pub scale: f32,
+    /// Layers pushed and not yet popped.
+    layers: Vec<ID2D1Layer>,
 }
 
 impl Canvas<'_> {
@@ -408,24 +443,24 @@ impl Canvas<'_> {
     }
 
     pub fn fill_rect(&mut self, r: Rect, c: Rgba) {
-        unsafe { self.gfx.rt.FillRectangle(&rect_f(r), self.brush(c)) };
+        unsafe { self.rt.FillRectangle(&rect_f(r), self.brush(c)) };
     }
 
     pub fn fill_round(&mut self, r: Rect, radius: f32, c: Rgba) {
         let rr = D2D1_ROUNDED_RECT { rect: rect_f(r), radiusX: radius, radiusY: radius };
-        unsafe { self.gfx.rt.FillRoundedRectangle(&rr, self.brush(c)) };
+        unsafe { self.rt.FillRoundedRectangle(&rr, self.brush(c)) };
     }
 
     /// A rounded outline drawn inside `r` (the stroke doesn't spill out of it).
     pub fn stroke_round(&mut self, r: Rect, radius: f32, c: Rgba, width: f32) {
         let r = r.inset(width / 2.0);
         let rr = D2D1_ROUNDED_RECT { rect: rect_f(r), radiusX: radius, radiusY: radius };
-        unsafe { self.gfx.rt.DrawRoundedRectangle(&rr, self.brush(c), width, None) };
+        unsafe { self.rt.DrawRoundedRectangle(&rr, self.brush(c), width, None) };
     }
 
     pub fn line(&mut self, from: (f32, f32), to: (f32, f32), c: Rgba, width: f32) {
         let (a, b) = (Vector2 { X: from.0, Y: from.1 }, Vector2 { X: to.0, Y: to.1 });
-        unsafe { self.gfx.rt.DrawLine(a, b, self.brush(c), width, None) };
+        unsafe { self.rt.DrawLine(a, b, self.brush(c), width, None) };
     }
 
     pub fn fill_ellipse(&mut self, center: (f32, f32), rx: f32, ry: f32, c: Rgba) {
@@ -434,7 +469,7 @@ impl Canvas<'_> {
             radiusX: rx,
             radiusY: ry,
         };
-        unsafe { self.gfx.rt.FillEllipse(&e, self.brush(c)) };
+        unsafe { self.rt.FillEllipse(&e, self.brush(c)) };
     }
 
     pub fn stroke_ellipse(&mut self, center: (f32, f32), rx: f32, ry: f32, c: Rgba, width: f32) {
@@ -443,7 +478,19 @@ impl Canvas<'_> {
             radiusX: rx,
             radiusY: ry,
         };
-        unsafe { self.gfx.rt.DrawEllipse(&e, self.brush(c), width, None) };
+        unsafe { self.rt.DrawEllipse(&e, self.brush(c), width, None) };
+    }
+
+    fn stops(&self, stops: &[(f32, Rgba)]) -> Option<ID2D1GradientStopCollection> {
+        let stops: Vec<D2D1_GRADIENT_STOP> = stops
+            .iter()
+            .map(|&(position, c)| D2D1_GRADIENT_STOP { position, color: c.d2d() })
+            .collect();
+        unsafe {
+            self.rt
+                .CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
+                .ok()
+        }
     }
 
     fn gradient(
@@ -452,20 +499,36 @@ impl Canvas<'_> {
         to: (f32, f32),
         stops: &[(f32, Rgba)],
     ) -> Option<ID2D1LinearGradientBrush> {
-        let stops: Vec<D2D1_GRADIENT_STOP> = stops
-            .iter()
-            .map(|&(position, c)| D2D1_GRADIENT_STOP { position, color: c.d2d() })
-            .collect();
-        let rt = &self.gfx.rt;
+        let collection = self.stops(stops)?;
+        let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+            startPoint: Vector2 { X: from.0, Y: from.1 },
+            endPoint: Vector2 { X: to.0, Y: to.1 },
+        };
+        unsafe { self.rt.CreateLinearGradientBrush(&props, None, &collection).ok() }
+    }
+
+    /// Fills `r` with an elliptical gradient around `center` out to `rx`, `ry`
+    /// through `stops`; past the last stop its color carries on.
+    pub fn fill_radial(
+        &mut self,
+        r: Rect,
+        center: (f32, f32),
+        rx: f32,
+        ry: f32,
+        stops: &[(f32, Rgba)],
+    ) {
+        let Some(collection) = self.stops(stops) else { return };
+        let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+            center: Vector2 { X: center.0, Y: center.1 },
+            gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
+            radiusX: rx,
+            radiusY: ry,
+        };
         unsafe {
-            let collection = rt
-                .CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
-                .ok()?;
-            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                startPoint: Vector2 { X: from.0, Y: from.1 },
-                endPoint: Vector2 { X: to.0, Y: to.1 },
+            let Ok(brush) = self.rt.CreateRadialGradientBrush(&props, None, &collection) else {
+                return;
             };
-            rt.CreateLinearGradientBrush(&props, None, &collection).ok()
+            self.rt.FillRectangle(&rect_f(r), &brush);
         }
     }
 
@@ -480,7 +543,7 @@ impl Canvas<'_> {
     ) {
         let Some(brush) = self.gradient(from, to, stops) else { return };
         let rr = D2D1_ROUNDED_RECT { rect: rect_f(r), radiusX: radius, radiusY: radius };
-        unsafe { self.gfx.rt.FillRoundedRectangle(&rr, &brush) };
+        unsafe { self.rt.FillRoundedRectangle(&rr, &brush) };
     }
 
     /// Fills `r` with a gradient (`from` → `to` through `stops`), faded by a
@@ -503,7 +566,7 @@ impl Canvas<'_> {
         else {
             return;
         };
-        let rt = &self.gfx.rt;
+        let rt = &self.rt;
         unsafe {
             let Ok(layer) = rt.CreateLayer(None) else { return };
             let Ok(opacity) = opacity.cast::<ID2D1Brush>() else { return };
@@ -528,7 +591,7 @@ impl Canvas<'_> {
         let s = utf16(text);
         let f = self.gfx.text_format(font);
         unsafe {
-            self.gfx.rt.DrawText(
+            self.rt.DrawText(
                 &s,
                 f,
                 &rect_f(r),
@@ -540,12 +603,22 @@ impl Canvas<'_> {
     }
 
     /// Text with a soft dark shadow under it, readable on any wallpaper.
+    ///
+    /// The text and its shadows go on whole device pixels. Direct2D snaps
+    /// each line to a pixel row on its own, so at a scale like 125% a
+    /// fractional position (say the top row of a panel's grid) could put the
+    /// shadow two rows under the text instead of one, which reads as doubled.
     pub fn text_shadowed(&mut self, text: &str, font: Font, r: Rect, c: Rgba, shadow: f32) {
-        let off = |dx: f32, dy: f32| Rect::new(r.x + dx, r.y + dy, r.w, r.h);
-        self.text(text, font, off(0.0, 1.0), Rgba::black(shadow * 0.7));
-        self.text(text, font, off(-0.6, 0.6), Rgba::black(shadow * 0.25));
-        self.text(text, font, off(0.6, 0.6), Rgba::black(shadow * 0.25));
-        self.text(text, font, r, c);
+        let s = self.scale;
+        let snap = |v: f32| (v * s).round() / s;
+        let px = (0.6 * s).round().max(1.0) / s;
+        let down = s.round().max(1.0) / s;
+        let (x, y) = (snap(r.x), snap(r.y));
+        let off = |dx: f32, dy: f32| Rect::new(x + dx, y + dy, r.w, r.h);
+        self.text(text, font, off(0.0, down), Rgba::black(shadow * 0.7));
+        self.text(text, font, off(-px, px), Rgba::black(shadow * 0.25));
+        self.text(text, font, off(px, px), Rgba::black(shadow * 0.25));
+        self.text(text, font, off(0.0, 0.0), c);
     }
 
     /// Draws an icon or thumbnail into `r` sharply: fitted inside it with its
@@ -566,24 +639,185 @@ impl Canvas<'_> {
         } else {
             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
         };
-        unsafe { self.gfx.rt.DrawBitmap(b, Some(&rect_f(dest)), 1.0, mode, None) };
+        unsafe { self.rt.DrawBitmap(b, Some(&rect_f(dest)), 1.0, mode, None) };
     }
 
     pub fn clip(&mut self, r: Rect) {
-        unsafe { self.gfx.rt.PushAxisAlignedClip(&rect_f(r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
+        unsafe { self.rt.PushAxisAlignedClip(&rect_f(r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
     }
 
     pub fn unclip(&mut self) {
-        unsafe { self.gfx.rt.PopAxisAlignedClip() };
+        unsafe { self.rt.PopAxisAlignedClip() };
     }
 
     /// Rotates what's drawn next by `degrees` around `center`; `reset` undoes it.
     pub fn rotate(&mut self, degrees: f32, center: (f32, f32)) {
         let m = Matrix3x2::rotation_around(degrees, Vector2 { X: center.0, Y: center.1 });
-        unsafe { self.gfx.rt.SetTransform(&m) };
+        unsafe { self.rt.SetTransform(&m) };
     }
 
     pub fn reset(&mut self) {
-        unsafe { self.gfx.rt.SetTransform(&Matrix3x2::identity()) };
+        unsafe { self.rt.SetTransform(&Matrix3x2::identity()) };
+    }
+
+    /// Transforms what's drawn next by `m`; `reset` undoes it.
+    pub fn transform(&mut self, m: Matrix3x2) {
+        unsafe { self.rt.SetTransform(&m) };
+    }
+
+    /// Draws what follows clipped to `r` with rounded corners and faded to
+    /// `opacity` as a whole, so overlapping shapes don't darken each other.
+    /// False when the layer couldn't be made; otherwise end it with `pop_layer`.
+    pub fn push_layer(&mut self, r: Rect, radius: f32, opacity: f32) -> bool {
+        let rr = D2D1_ROUNDED_RECT { rect: rect_f(r), radiusX: radius, radiusY: radius };
+        unsafe {
+            let Ok(shape) = self.gfx.d2d.CreateRoundedRectangleGeometry(&rr) else { return false };
+            let Ok(layer) = self.rt.CreateLayer(None) else { return false };
+            let params = D2D1_LAYER_PARAMETERS {
+                contentBounds: rect_f(r),
+                geometricMask: ManuallyDrop::new(shape.cast::<ID2D1Geometry>().ok()),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: Matrix3x2::identity(),
+                opacity,
+                opacityBrush: ManuallyDrop::new(None),
+                layerOptions: D2D1_LAYER_OPTIONS_NONE,
+            };
+            self.rt.PushLayer(&params, &layer);
+            drop(ManuallyDrop::into_inner(params.geometricMask));
+            // Kept until it's popped.
+            self.layers.push(layer);
+        }
+        true
+    }
+
+    pub fn pop_layer(&mut self) {
+        if self.layers.pop().is_some() {
+            unsafe { self.rt.PopLayer() };
+        }
+    }
+
+    /// A path of cubic Bézier `segs` (two control points and an end each) from `start`.
+    pub fn curve_path(
+        &self,
+        start: (f32, f32),
+        segs: &[[(f32, f32); 3]],
+    ) -> Option<ID2D1PathGeometry> {
+        let v = |p: (f32, f32)| Vector2 { X: p.0, Y: p.1 };
+        let beziers: Vec<D2D1_BEZIER_SEGMENT> = segs
+            .iter()
+            .map(|s| D2D1_BEZIER_SEGMENT { point1: v(s[0]), point2: v(s[1]), point3: v(s[2]) })
+            .collect();
+        let closed = segs.last().is_some_and(|s| s[2] == start);
+        self.path(v(start), closed, |sink| unsafe { sink.AddBeziers(&beziers) })
+    }
+
+    /// A closed polygon through `points`.
+    pub fn poly_path(&self, points: &[(f32, f32)]) -> Option<ID2D1PathGeometry> {
+        let pts: Vec<Vector2> = points.iter().map(|p| Vector2 { X: p.0, Y: p.1 }).collect();
+        let (first, rest) = pts.split_first()?;
+        self.path(*first, true, |sink| unsafe { sink.AddLines(rest) })
+    }
+
+    fn path(
+        &self,
+        start: Vector2,
+        closed: bool,
+        add: impl FnOnce(&ID2D1GeometrySink),
+    ) -> Option<ID2D1PathGeometry> {
+        unsafe {
+            let path = self.gfx.d2d.CreatePathGeometry().ok()?;
+            let sink = path.Open().ok()?;
+            let begin = if closed { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW };
+            sink.BeginFigure(start, begin);
+            add(&sink);
+            sink.EndFigure(if closed { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+            sink.Close().ok()?;
+            Some(path)
+        }
+    }
+
+    pub fn fill_path(&mut self, path: &ID2D1PathGeometry, c: Rgba) {
+        unsafe { self.rt.FillGeometry(path, self.brush(c), None) };
+    }
+
+    pub fn stroke_path(&mut self, path: &ID2D1PathGeometry, c: Rgba, width: f32) {
+        unsafe { self.rt.DrawGeometry(path, self.brush(c), width, None) };
+    }
+
+    /// Draws `b` stretched over `dest`, smoothly or (`blocky`) as square pixels.
+    pub fn bitmap(&mut self, b: &ID2D1Bitmap, dest: Rect, opacity: f32, blocky: bool) {
+        let mode = if blocky {
+            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+        } else {
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR
+        };
+        unsafe { self.rt.DrawBitmap(b, Some(&rect_f(dest)), opacity, mode, None) };
+    }
+
+    /// Fills `r` (rounded by `radius`) with `b` repeated, one copy's corner at
+    /// `origin`, scaled by `dip` (a pixel of a 96 DPI bitmap is one DIP).
+    pub fn tile_bitmap(
+        &mut self,
+        b: &ID2D1Bitmap,
+        r: Rect,
+        radius: f32,
+        origin: (f32, f32),
+        dip: f32,
+        opacity: f32,
+    ) {
+        let props = D2D1_BITMAP_BRUSH_PROPERTIES {
+            extendModeX: D2D1_EXTEND_MODE_WRAP,
+            extendModeY: D2D1_EXTEND_MODE_WRAP,
+            interpolationMode: D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+        };
+        let brush = D2D1_BRUSH_PROPERTIES {
+            opacity,
+            transform: Matrix3x2::scale(dip, dip) * Matrix3x2::translation(origin.0, origin.1),
+        };
+        unsafe {
+            if let Ok(brush) = self.rt.CreateBitmapBrush(b, Some(&props), Some(&brush)) {
+                let rr = D2D1_ROUNDED_RECT { rect: rect_f(r), radiusX: radius, radiusY: radius };
+                self.rt.FillRoundedRectangle(&rr, &brush);
+            }
+        }
+    }
+
+    /// The grain effect's noise over `r`, one speck per device pixel.
+    pub fn grain(&mut self, r: Rect, opacity: f32) {
+        if let Some(b) = self.gfx.grain_bitmap() {
+            self.tile_bitmap(&b, r, 0.0, (r.x, r.y), 1.0 / self.scale, opacity);
+        }
+    }
+
+    /// Draws with `draw` into a new `w` x `h` DIP picture of `px_w` x `px_h`
+    /// pixels, and returns it. Drawn at few pixels and shown large, it pixelates.
+    pub fn offscreen(
+        &mut self,
+        w: f32,
+        h: f32,
+        px_w: u32,
+        px_h: u32,
+        draw: impl FnOnce(&mut Canvas),
+    ) -> Option<ID2D1Bitmap> {
+        unsafe {
+            let target = self
+                .rt
+                .CreateCompatibleRenderTarget(
+                    Some(&D2D_SIZE_F { width: w, height: h }),
+                    Some(&D2D_SIZE_U { width: px_w.max(1), height: px_h.max(1) }),
+                    None,
+                    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+                )
+                .ok()?;
+            target.BeginDraw();
+            target.Clear(Some(&Rgba::black(0.0).d2d()));
+            let rt = ID2D1RenderTarget::clone(&target);
+            let scale = px_w as f32 / w.max(1.0);
+            let mut canvas = Canvas { gfx: self.gfx, rt, scale, layers: Vec::new() };
+            draw(&mut canvas);
+            drop(canvas);
+            target.EndDraw(None, None).ok()?;
+            target.GetBitmap().ok()
+        }
     }
 }

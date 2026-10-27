@@ -1,6 +1,7 @@
 //! Pure logic of Desktop Icons Sorter. Nothing here touches Win32, so it all
 //! runs (and is tested) with plain `cargo test`.
 
+pub mod background;
 pub mod catcher;
 pub mod config;
 pub mod folder;

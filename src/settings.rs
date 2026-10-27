@@ -8,8 +8,8 @@
 use std::ffi::c_void;
 
 use sorter::model::{
-    AddMode, AppConfig, CollapseAlign, CollapseDirection, HeaderShape, IconSize, PanelConfig,
-    SortBy, TitleBarStyle,
+    AddMode, AppConfig, BgEffect, BgTexture, CollapseAlign, CollapseDirection, HeaderShape,
+    IconSize, ImageFit, MIN_TEXTURE_SCALE, PanelConfig, SortBy, TitleBarStyle,
 };
 use sorter::panel_layout::Rect;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -29,6 +29,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 use crate::app::{App, Deferred, hinstance, run_deferred, with_app};
+use crate::panel::{Background, draw_background};
+use crate::win::bgimage::Image;
 use crate::win::render::{Canvas, Font, Rgba};
 use crate::win::{Wide, dpi, point_of, wheel_delta};
 
@@ -156,8 +158,16 @@ pub enum Act {
     Color(Layer),
     Preset(usize),
     SortMenu,
+    LookMenu,
     ChangeFolder,
+    DuplicatePanel,
     Delete,
+    ChooseImage,
+    RemoveImage,
+    Fit(ImageFit),
+    Texture(BgTexture),
+    Scatter,
+    Effect(BgEffect),
     AddMode(AddMode),
     Snapping,
     Locked,
@@ -170,6 +180,12 @@ pub enum Layer {
     Background,
     Bar,
     Text,
+    Image,
+    Texture,
+    /// The texture's size (it has no color).
+    TextureSize,
+    /// The effect's strength (it has no color).
+    Effect,
 }
 
 enum Look {
@@ -201,6 +217,8 @@ enum SegLabel {
 enum Art {
     Shape(HeaderShape),
     Style(TitleBarStyle),
+    Texture(BgTexture),
+    Effect(BgEffect),
 }
 
 struct Ctl {
@@ -238,6 +256,62 @@ const STYLES: [(TitleBarStyle, &str, &str); 4] = [
         "No hard edges: the bar fades out at its ends and blends into the panel.",
     ),
 ];
+
+const TEXTURES: [(BgTexture, &str); 10] = [
+    (BgTexture::None, "None"),
+    (BgTexture::Flowers, "Flowers"),
+    (BgTexture::Vines, "Vines"),
+    (BgTexture::Leaves, "Leaves"),
+    (BgTexture::Dots, "Dots"),
+    (BgTexture::Stripes, "Stripes"),
+    (BgTexture::Waves, "Waves"),
+    (BgTexture::Stars, "Stars"),
+    (BgTexture::Hearts, "Hearts"),
+    (BgTexture::Cracks, "Cracks"),
+];
+
+const EFFECTS: [(BgEffect, &str, &str); 7] = [
+    (BgEffect::None, "None", "Nothing over the background."),
+    (
+        BgEffect::Blur,
+        "Blur",
+        "Frosted glass: the wallpaper behind the panel and its picture, blurred.",
+    ),
+    (
+        BgEffect::Pixelate,
+        "Pixelate",
+        "Big square pixels: the wallpaper behind the panel, its picture and its texture.",
+    ),
+    (BgEffect::Grain, "Grain", "Fine film grain."),
+    (BgEffect::Vignette, "Vignette", "Darkens toward the edges."),
+    (BgEffect::Gradient, "Gradient", "Darkens toward the bottom."),
+    (BgEffect::Scanlines, "Scanlines", "Thin dark lines, like an old screen."),
+];
+
+/// A panel's picture and the wallpaper behind it, for the preview.
+#[derive(Default)]
+struct PreviewImages {
+    picture: Option<Image>,
+    /// The monitor wallpapers and where they go, from the panel's corner.
+    walls: Vec<(Image, Rect)>,
+    /// The panel's size in DIPs.
+    size: (f32, f32),
+}
+
+fn percent(v: f64) -> String {
+    format!("{}%", (v * 100.0).round())
+}
+
+/// The texture size slider runs evenly from half to double size: 0.5 · 4^value.
+fn texture_size_slider(scale: f64) -> f64 {
+    ((scale / MIN_TEXTURE_SCALE).ln() / 4f64.ln()).clamp(0.0, 1.0)
+}
+
+fn texture_size_from_slider(v: f64) -> f64 {
+    let scale = MIN_TEXTURE_SCALE * 4f64.powf(v);
+    // Snaps to the normal size near the middle, so it's easy to get back to.
+    if (scale - 1.0).abs() < 0.06 { 1.0 } else { (scale * 100.0).round() / 100.0 }
+}
 
 /// Lays out a page top to bottom.
 struct Builder<'a> {
@@ -359,6 +433,69 @@ impl Builder<'_> {
             .collect()
     }
 
+    /// A color swatch (when `hex` is given) and an opacity slider (when
+    /// `opacity` is), for one of the panel's colored layers.
+    fn color_row(&mut self, label: &str, hex: Option<&str>, opacity: Option<f64>, layer: Layer) {
+        let slider = opacity.map(|o| (o, percent(o)));
+        self.slider_row(label, hex, slider, layer);
+    }
+
+    /// Like `color_row`, with the slider at `value` (0–1) showing `badge`.
+    fn slider_row(
+        &mut self,
+        label: &str,
+        hex: Option<&str>,
+        slider: Option<(f64, String)>,
+        layer: Layer,
+    ) {
+        let swatch = if hex.is_some() { 26.0 + 10.0 } else { 0.0 };
+        let cw = swatch + if slider.is_some() { 120.0 + 10.0 + 46.0 } else { -10.0 };
+        let hex = hex.map(str::to_string);
+        self.row(label, None, cw, 26.0, |b, r| {
+            if let Some(hex) = hex {
+                b.push(Rect::new(r.x, r.y, 26.0, 26.0), Look::Swatch(hex), Act::Color(layer));
+            }
+            if let Some((value, badge)) = slider {
+                let x = r.x + swatch;
+                b.push(
+                    Rect::new(x, r.y + 2.0, 120.0, 22.0),
+                    Look::Slider { value: value as f32 },
+                    Act::Opacity(layer),
+                );
+                b.push(Rect::new(x + 130.0, r.y + 4.0, 46.0, 18.0), Look::Badge(badge), Act::None);
+            }
+        });
+    }
+
+    /// Picture tiles to pick one of `options`, `per_row` to a row.
+    #[allow(clippy::too_many_arguments)]
+    fn tiles<T: Copy + PartialEq>(
+        &mut self,
+        label: &str,
+        hint: &str,
+        per_row: usize,
+        options: &[(T, &'static str)],
+        current: T,
+        art: impl Fn(T) -> Art,
+        act: impl Fn(T) -> Act,
+    ) {
+        let rows = options.len().div_ceil(per_row);
+        let (th, gap) = (62.0, 6.0);
+        let ch = rows as f32 * th + (rows - 1) as f32 * gap;
+        self.stacked(label, hint, ch, |b, r| {
+            let w = (r.w - (per_row - 1) as f32 * gap) / per_row as f32;
+            for (n, (v, name)) in options.iter().enumerate() {
+                let (col, row) = ((n % per_row) as f32, (n / per_row) as f32);
+                let t = Rect::new(r.x + col * (w + gap), r.y + row * (th + gap), w, th);
+                b.push(
+                    t,
+                    Look::Tile { art: art(*v), label: name, selected: *v == current },
+                    act(*v),
+                );
+            }
+        });
+    }
+
     /// A segmented control: one choice of several, in a row.
     fn segmented(&mut self, label: &str, hint: Option<&str>, options: Vec<(SegLabel, Act, bool)>) {
         let labels: Vec<SegLabel> = options.iter().map(|o| o.0).collect();
@@ -411,6 +548,14 @@ fn panel_page(
             x += 32.0 + 12.0;
         }
         b.y += 36.0;
+        if app.panels.len() > 1 {
+            b.y += 8.0;
+            b.first_row = false;
+            let hint = "Its colors, title bar, icon size and background.";
+            b.row("Copy look from", Some(hint), 150.0, 30.0, |b, r| {
+                b.push(r, Look::Dropdown("Choose a panel"), Act::LookMenu)
+            });
+        }
     });
 
     b.section("Look", |b| {
@@ -442,30 +587,75 @@ fn panel_page(
                 );
             }
         });
-        let color_row =
-            |b: &mut Builder, label: &str, hex: &str, opacity: Option<f64>, layer: Layer| {
-                let cw = if opacity.is_some() { 26.0 + 10.0 + 120.0 + 10.0 + 46.0 } else { 26.0 };
-                let hex = hex.to_string();
-                b.row(label, None, cw, 26.0, |b, r| {
-                    b.push(Rect::new(r.x, r.y, 26.0, 26.0), Look::Swatch(hex), Act::Color(layer));
-                    if let Some(o) = opacity {
-                        b.push(
-                            Rect::new(r.x + 36.0, r.y + 2.0, 120.0, 22.0),
-                            Look::Slider { value: o as f32 },
-                            Act::Opacity(layer),
-                        );
-                        let pct = format!("{}%", (o * 100.0).round());
-                        b.push(
-                            Rect::new(r.x + 166.0, r.y + 4.0, 46.0, 18.0),
-                            Look::Badge(pct),
-                            Act::None,
-                        );
-                    }
-                });
-            };
-        color_row(b, "Background", &p.bg_color, Some(p.bg_opacity), Layer::Background);
-        color_row(b, "Title bar", &p.title_bar_color, Some(p.title_bar_opacity), Layer::Bar);
-        color_row(b, "Title text", &p.title_text_color, None, Layer::Text);
+        b.color_row("Background", Some(&p.bg_color), Some(p.bg_opacity), Layer::Background);
+        b.color_row("Title bar", Some(&p.title_bar_color), Some(p.title_bar_opacity), Layer::Bar);
+        b.color_row("Title text", Some(&p.title_text_color), None, Layer::Text);
+    });
+
+    b.section("Background", |b| {
+        if p.bg_image.is_empty() {
+            b.row("Image", Some("A picture over the background color."), 90.0, 30.0, |b, r| {
+                b.push(r, Look::Button { label: "Choose…", danger: false }, Act::ChooseImage)
+            });
+        } else {
+            b.separator();
+            b.y += 8.0;
+            let name = std::path::Path::new(&p.bg_image)
+                .file_name()
+                .map_or(p.bg_image.clone(), |n| n.to_string_lossy().into_owned());
+            let bw = 76.0;
+            b.push(
+                Rect::new(b.x, b.y + 2.0, b.w - 2.0 * bw - 16.0, 28.0),
+                Look::Path(name),
+                Act::None,
+            );
+            b.push(
+                Rect::new(b.x + b.w - 2.0 * bw - 6.0, b.y + 1.0, bw, 30.0),
+                Look::Button { label: "Change…", danger: false },
+                Act::ChooseImage,
+            );
+            b.push(
+                Rect::new(b.x + b.w - bw, b.y + 1.0, bw, 30.0),
+                Look::Button { label: "Remove", danger: false },
+                Act::RemoveImage,
+            );
+            b.y += 40.0;
+            b.color_row("Image opacity", None, Some(p.bg_image_opacity), Layer::Image);
+            let fits = [
+                (ImageFit::Fill, "Fill"),
+                (ImageFit::Fit, "Fit"),
+                (ImageFit::Stretch, "Stretch"),
+                (ImageFit::Tile, "Tile"),
+            ];
+            b.segmented(
+                "Fit",
+                None,
+                fits.iter()
+                    .map(|(v, l)| (SegLabel::Text(l), Act::Fit(*v), *v == p.bg_image_fit))
+                    .collect(),
+            );
+        }
+        let hint = "A pattern over the background, in a color you choose.";
+        b.tiles("Texture", hint, 5, &TEXTURES, p.texture, Art::Texture, Act::Texture);
+        if p.texture != BgTexture::None {
+            let (hex, o) = (&p.texture_color, p.texture_opacity);
+            b.color_row("Texture color", Some(hex), Some(o), Layer::Texture);
+            let size = (texture_size_slider(p.texture_scale), percent(p.texture_scale));
+            b.slider_row("Texture size", None, Some(size), Layer::TextureSize);
+            b.switch(
+                "Scatter",
+                Some("Spreads the pattern out at random, in slightly different sizes."),
+                p.texture_random,
+                true,
+                Act::Scatter,
+            );
+        }
+        let hint = EFFECTS.iter().find(|e| e.0 == p.bg_effect).map_or("", |e| e.2);
+        let effects: Vec<(BgEffect, &str)> = EFFECTS.iter().map(|e| (e.0, e.1)).collect();
+        b.tiles("Effect", hint, 4, &effects, p.bg_effect, Art::Effect, Act::Effect);
+        if p.bg_effect != BgEffect::None {
+            b.color_row("Strength", None, Some(p.bg_effect_strength), Layer::Effect);
+        }
     });
 
     b.section("Icons", |b| {
@@ -558,8 +748,14 @@ fn panel_page(
     });
 
     b.y += 12.0;
+    let half = (WIDTH - 2.0 * PAD - 10.0) / 2.0;
     b.push(
-        Rect::new(PAD, b.y, WIDTH - 2.0 * PAD, 34.0),
+        Rect::new(PAD, b.y, half, 34.0),
+        Look::Button { label: "Duplicate panel", danger: false },
+        Act::DuplicatePanel,
+    );
+    b.push(
+        Rect::new(PAD + half + 10.0, b.y, half, 34.0),
         Look::Button { label: "Delete panel…", danger: true },
         Act::Delete,
     );
@@ -703,11 +899,67 @@ fn draw_art(c: &mut Canvas, t: &Theme, r: Rect, art: Art) {
                 }
             }
         }
+        // A small swatch drawn by the panel's own background code.
+        Art::Texture(texture) => {
+            let bg = Background {
+                texture,
+                texture_color: t.art_bar,
+                texture_opacity: 1.0,
+                ..art_background(t.art)
+            };
+            draw_background(c, r, 4.0, &bg);
+        }
+        Art::Effect(BgEffect::Blur) => {
+            // Soft blobs of color, like a blurred wallpaper.
+            c.fill_round(r, 4.0, Rgba::hex("#3d6fb0", 1.0));
+            c.clip(r);
+            for (x, y, rad, hex) in [
+                (0.25, 0.3, 0.45, "#f2a65a"),
+                (0.7, 0.75, 0.5, "#7fd1b9"),
+                (0.8, 0.2, 0.35, "#e05780"),
+            ] {
+                let center = (r.x + r.w * x, r.y + r.h * y);
+                let color = Rgba::hex(hex, 0.9);
+                let stops = [(0.0, color), (1.0, color.with_alpha(0.0))];
+                c.fill_radial(r, center, r.w * rad, r.w * rad, &stops);
+            }
+            c.unclip();
+        }
+        Art::Effect(effect) => {
+            let pixelate = effect == BgEffect::Pixelate;
+            let bg = Background {
+                texture: if pixelate { BgTexture::Flowers } else { BgTexture::None },
+                texture_color: Rgba::white(1.0),
+                texture_opacity: 0.7,
+                effect,
+                strength: if pixelate { 0.15 } else { 1.0 },
+                ..art_background(Rgba::hex("#3d6fb0", 1.0))
+            };
+            draw_background(c, r, 4.0, &bg);
+        }
+    }
+}
+
+/// A plain background in `color` for a settings picture.
+fn art_background<'a>(color: Rgba) -> Background<'a> {
+    Background {
+        color,
+        wallpaper: &[],
+        image: None,
+        image_opacity: 1.0,
+        fit: ImageFit::Fill,
+        texture: BgTexture::None,
+        texture_color: color,
+        texture_opacity: 0.0,
+        texture_scale: 0.5,
+        scatter: None,
+        effect: BgEffect::None,
+        strength: 0.0,
     }
 }
 
 /// The preview at the top of a panel's settings: a small panel in its colors.
-fn draw_preview(c: &mut Canvas, t: &Theme, r: Rect, p: &PanelConfig) {
+fn draw_preview(c: &mut Canvas, t: &Theme, r: Rect, p: &PanelConfig, images: &PreviewImages) {
     c.clip(r);
     // A checkerboard, so transparency shows.
     c.fill_rect(r, Rgba::hex("#888888", 1.0));
@@ -722,7 +974,15 @@ fn draw_preview(c: &mut Canvas, t: &Theme, r: Rect, p: &PanelConfig) {
         y += 8.0;
         row += 1;
     }
-    c.fill_rect(r, Rgba::hex(&p.bg_color, p.bg_opacity as f32));
+    // The panel's own wallpaper piece, squeezed to fit.
+    // The panel's share of the wallpaper, squeezed into the preview like the panel.
+    let (kx, ky) = (r.w / images.size.0.max(1.0), r.h / images.size.1.max(1.0));
+    let walls: Vec<(Image, Rect)> = images
+        .walls
+        .iter()
+        .map(|(w, at)| (w.clone(), Rect::new(at.x * kx, at.y * ky, at.w * kx, at.h * ky)))
+        .collect();
+    draw_background(c, r, 0.0, &Background::of(p, images.picture.as_ref(), &walls));
     let side = p.collapse_direction;
     let depth = 26.0;
     let mut bar = match side {
@@ -799,7 +1059,7 @@ fn draw_page(
     t: &Theme,
     items: &[Ctl],
     hover: Option<usize>,
-    panel: Option<&PanelConfig>,
+    panel: Option<(&PanelConfig, &PreviewImages)>,
     w: f32,
     h: f32,
     content_h: f32,
@@ -970,7 +1230,7 @@ fn draw_page(
             }
             Look::Preview => {
                 if let Some(p) = panel {
-                    draw_preview(c, t, r, p);
+                    draw_preview(c, t, r, p.0, p.1);
                 }
             }
         }
@@ -1279,9 +1539,19 @@ impl App {
         let theme = s.theme;
         let (hover, scroll, scale) = (s.hover, s.scroll, s.scale);
         let panel = s.panel.as_ref().and_then(|id| self.store.panel(id)).cloned();
+        // The panel's own decoded picture and wallpaper, if loaded.
+        let mut images = PreviewImages::default();
+        if let (Some(p), Some(i)) = (&panel, self.settings_panel(n)) {
+            images.picture = self.bg_images.peek(&self.gfx, &p.id).cloned();
+            let (rect, scale) = (self.panels[i].rect, self.panels[i].scale);
+            images.walls = self.wall_images(p, rect, scale).0;
+            images.size =
+                ((rect.right - rect.left) as f32 / scale, (rect.bottom - rect.top) as f32 / scale);
+        }
         let (pw, ph) = ((w * scale).round() as i32, (h * scale).round() as i32);
+        let preview = panel.as_ref().map(|p| (p, &images));
         let r = self.gfx.paint_window(hdc, pw, ph, scale, |c| {
-            draw_page(c, &theme, &items, hover, panel.as_ref(), w, h, content_h, scroll)
+            draw_page(c, &theme, &items, hover, preview, w, h, content_h, scroll)
         });
         if let Err(e) = r {
             eprintln!("[settings] {e}");
@@ -1311,7 +1581,11 @@ impl App {
         let v = (((x - r.x - 8.0) / (r.w - 16.0)).clamp(0.0, 1.0) * 100.0).round() as f64 / 100.0;
         self.update_panel(i, |p| match layer {
             Layer::Background => p.bg_opacity = v,
-            _ => p.title_bar_opacity = v,
+            Layer::Bar | Layer::Text => p.title_bar_opacity = v,
+            Layer::Image => p.bg_image_opacity = v,
+            Layer::Texture => p.texture_opacity = v,
+            Layer::TextureSize => p.texture_scale = texture_size_from_slider(v),
+            Layer::Effect => p.bg_effect_strength = v,
         });
     }
 
@@ -1349,6 +1623,9 @@ impl App {
                     p.title_text_color = text.into();
                 });
             }
+            (Act::LookMenu, Some(_)) => {
+                self.defer(Deferred::LookMenu { owner: hwnd, panel: panel.unwrap_or_default() })
+            }
             (Act::SortMenu, Some(_)) => {
                 self.defer(Deferred::SortMenu { owner: hwnd, panel: panel.unwrap_or_default() })
             }
@@ -1356,6 +1633,20 @@ impl App {
                 self.defer(Deferred::ChooseFolder { owner: hwnd, panel: panel.unwrap_or_default() })
             }
             (Act::Delete, Some(_)) => self.defer(Deferred::DeletePanel(panel.unwrap_or_default())),
+            (Act::DuplicatePanel, Some(i)) => self.duplicate_panel(i),
+            (Act::ChooseImage, Some(_)) => {
+                self.defer(Deferred::ChooseImage { owner: hwnd, panel: panel.unwrap_or_default() })
+            }
+            (Act::RemoveImage, Some(i)) => {
+                self.bg_images.forget(&self.panels[i].id.clone());
+                self.update_panel(i, |p| p.bg_image.clear());
+            }
+            (Act::Fit(v), Some(i)) => self.update_panel(i, |p| p.bg_image_fit = v),
+            (Act::Texture(v), Some(i)) => self.update_panel(i, |p| p.texture = v),
+            (Act::Scatter, Some(i)) => {
+                self.update_panel(i, |p| p.texture_random = !p.texture_random)
+            }
+            (Act::Effect(v), Some(i)) => self.update_panel(i, |p| p.bg_effect = v),
             (Act::AddMode(v), _) => self.update_app(|c| c.add_mode = v),
             (Act::Snapping, _) => self.update_app(|c| c.snapping = !c.snapping),
             (Act::Locked, _) => {
@@ -1369,6 +1660,22 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+/// The "Copy look from" menu under a settings window's control: the other panels.
+pub fn look_menu(owner: HWND, panel: &str) {
+    use crate::win::menu::{self, Item};
+    let Some(others) = with_app(|a| a.other_panels(panel)) else { return };
+    let items: Vec<Item> =
+        others.iter().enumerate().map(|(n, (_, title))| Item::cmd(n + 1, title)).collect();
+    let cmd = menu::show(&items, owner, None);
+    if (1..=others.len()).contains(&cmd) {
+        with_app(|a| {
+            if let Some(i) = a.panel_by_id(panel) {
+                a.copy_look(i, &others[cmd - 1].0);
+            }
+        });
     }
 }
 

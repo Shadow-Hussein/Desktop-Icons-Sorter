@@ -106,6 +106,8 @@ const CMD_COLLAPSE: usize = 44;
 const CMD_DELETE: usize = 47;
 const CMD_PASTE: usize = 48;
 const CMD_NEW_FOLDER: usize = 49;
+const CMD_DUPLICATE_PANEL: usize = 50;
+const CMD_LOOK: usize = 100; // + index in the other panels
 
 const SIZES: [(IconSize, &str); 3] = [
     (IconSize::Small, "Small icons"),
@@ -176,6 +178,15 @@ fn view_menu(size: IconSize, sort: SortBy) -> [Item; 2] {
     ]
 }
 
+/// "Copy look from" with the other panels (`(id, title)`); None when there are none.
+fn look_menu(others: &[(String, String)]) -> Option<Item> {
+    if others.is_empty() {
+        return None;
+    }
+    let items = others.iter().enumerate().map(|(n, (_, title))| Item::cmd(CMD_LOOK + n, title));
+    Some(Item::Sub("Copy look from".into(), items.collect()))
+}
+
 /// Shows a panel's title or background menu, or the shell's menu for items,
 /// and does what was chosen. `at` is where (screen pixels); None for the cursor.
 pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
@@ -183,11 +194,13 @@ pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
         item_menu(id, paths, at);
         return;
     }
-    let Some((hwnd, items)) = with_app(|a| {
+    let Some((hwnd, items, others)) = with_app(|a| {
         let i = a.panel_by_id(id)?;
         let p = a.config_of(i)?.clone();
         let [view, sort] = view_menu(p.icon_size, p.sort_by);
-        let items = match &kind {
+        let others = a.other_panels(id);
+        let look = look_menu(&others);
+        let mut items = match &kind {
             MenuKind::Background => {
                 let mut items = vec![view, sort, Item::Sep];
                 if shellmenu::can_paste() {
@@ -200,6 +213,7 @@ pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
                     Item::cmd(CMD_SETTINGS, "Panel settings…"),
                     Item::Sep,
                     Item::cmd(CMD_NEW, "New panel"),
+                    Item::cmd(CMD_DUPLICATE_PANEL, "Duplicate panel"),
                 ]);
                 items
             }
@@ -211,13 +225,21 @@ pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
                 sort,
                 Item::Sep,
                 Item::cmd(CMD_NEW, "New panel"),
+                Item::cmd(CMD_DUPLICATE_PANEL, "Duplicate panel"),
                 Item::check(CMD_LOCK, "Lock all panels", a.store.config().locked),
                 Item::cmd(CMD_APP_SETTINGS, "App settings…"),
                 Item::Sep,
                 Item::cmd(CMD_DELETE, "Delete panel…"),
             ],
         };
-        Some((a.panels[i].hwnd, items))
+        // Right after "Duplicate panel" in either menu.
+        if let Some(look) = look
+            && let Some(at) =
+                items.iter().position(|it| matches!(it, Item::Cmd(CMD_DUPLICATE_PANEL, _)))
+        {
+            items.insert(at + 1, look);
+        }
+        Some((a.panels[i].hwnd, items, others))
     })
     .flatten() else {
         return;
@@ -226,6 +248,9 @@ pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
     with_app(|a| {
         let Some(i) = a.panel_by_id(id) else { return };
         match cmd {
+            c if (CMD_LOOK..CMD_LOOK + others.len()).contains(&c) => {
+                a.copy_look(i, &others[c - CMD_LOOK].0)
+            }
             c if (CMD_SIZE..CMD_SIZE + SIZES.len()).contains(&c) => {
                 let size = SIZES[c - CMD_SIZE].0;
                 a.update_panel(i, |p| p.icon_size = size);
@@ -244,6 +269,7 @@ pub fn panel_menu(id: &str, kind: MenuKind, at: Option<POINT>) {
             }
             CMD_SETTINGS => a.open_settings(i),
             CMD_NEW => a.new_panel(),
+            CMD_DUPLICATE_PANEL => a.duplicate_panel(i),
             CMD_RENAME_TITLE => a.start_edit(i, EditTarget::Title(id.to_string())),
             CMD_COLLAPSE => a.toggle_collapsed(i),
             CMD_LOCK => a.set_locked(!a.store.config().locked),
@@ -735,6 +761,8 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
     let locked = a.store.config().locked;
     match msg {
         WM_LBUTTONDOWN => {
+            // One selection at a time: a click in this panel ends the others'.
+            a.clear_other_selections(i);
             let (x, y) = dip(a, i, l);
             let hit = panel::hit(&cfg, &a.panels[i], locked, x, y);
             let at = cursor();
@@ -869,6 +897,7 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
             Some(LRESULT(0))
         }
         WM_RBUTTONUP => {
+            a.clear_other_selections(i);
             let (x, y) = dip(a, i, l);
             let kind = match panel::hit(&cfg, &a.panels[i], locked, x, y) {
                 Hit::TitleText | Hit::TitleBar | Hit::Chevron | Hit::Gear => MenuKind::Title,
@@ -946,6 +975,14 @@ fn panel_message(a: &mut App, i: usize, msg: u32, w: WPARAM, l: LPARAM) -> Optio
             // Back to the bottom once another window takes over.
             if (w.0 & 0xffff) as u32 == WA_INACTIVE {
                 desktop_layer::send_to_bottom(hwnd);
+                // Clicking the desktop deselects, as it does for desktop icons.
+                // Another app taking over keeps the selection, as in Explorer.
+                // `l` is the window being activated; it can be missing.
+                let next = HWND(l.0 as *mut _);
+                let next = if next.is_invalid() { unsafe { GetForegroundWindow() } } else { next };
+                if desktop_layer::is_desktop(next) {
+                    a.clear_selection(i);
+                }
             }
             None
         }
